@@ -6,7 +6,7 @@ bunch of fast vibecoded stuff, not for your use
 
 Click a script name to install it — if you have [Violentmonkey](https://violentmonkey.github.io/) installed, it'll prompt you to install automatically.
 
-| Script                                                                                                                         | Description                                                                                      |
+| Download                                                                                                                       |                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds.            |
 | [Backloggd - Copy Review Link](https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js)       | Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards. |
