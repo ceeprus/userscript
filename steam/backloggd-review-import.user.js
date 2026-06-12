@@ -13,8 +13,8 @@
 // @connect      backloggd.com
 // @run-at       document-idle
 // @license      MIT
-// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd-review-import.user.js
-// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd-review-import.user.js
+// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js
+// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js
 // ==/UserScript==
 
 (function () {
