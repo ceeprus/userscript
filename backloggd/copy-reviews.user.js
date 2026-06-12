@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Backloggd - Copy Review Link
 // @namespace    https://github.com/ceeprus
-// @version      1.0
+// @version      1.1
 // @description  Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       Cee
 // @match        *://*.backloggd.com/*
 // @grant        none

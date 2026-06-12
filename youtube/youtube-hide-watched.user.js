@@ -3,6 +3,7 @@
 // @namespace    https://www.haus.gg/
 // @version      6.22
 // @license      MIT
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds.
 // @author       Ev Haus
 // @author       netjeff

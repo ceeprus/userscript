@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Steam Curator: Import Review Link from Backloggd
 // @namespace    https://github.com/ceeprus
-// @version      2.3
+// @version      2.4
 // @description  Adds a searchable "Import from Backloggd" box next to the "URL for full review (Optional)" field on Steam Curator review-edit pages, letting you pick one of your Backloggd reviews, auto-fill the link, and optionally import the review text into "Write your review". Prompts for your Backloggd username on first use.
 // @author       Cee
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
 // @match        https://store.steampowered.com/curator/*/admin/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
