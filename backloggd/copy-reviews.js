@@ -7,6 +7,8 @@
 // @match        *://*.backloggd.com/*
 // @grant        none
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js
+// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js
 // ==/UserScript==
 
 (function () {

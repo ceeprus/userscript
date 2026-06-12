@@ -8,6 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      github.com
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js
+// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js
 // ==/UserScript==
 
 (function () {
