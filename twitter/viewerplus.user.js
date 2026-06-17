@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Twitter: Profile Viewer+
+// @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.18
-// @description  Adds a themed panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text and hide-media toggles. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
+// @version      1.20
+// @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @match        https://x.com/*
@@ -16,19 +16,9 @@
 // ==/UserScript==
 
 /*
- * Inserts a panel above the "You might like" card in the right sidebar of an X/Twitter profile.
- *
- *  - Whole-tweet filters (with live counters): pinned, replies, quote retweets, retweets, posts,
- *    media posts, text-only posts.
- *  - Per-tweet modifiers: compact media, hide post text, hide media.
- *  - Settings persist across sessions; the panel can be minimised; "Reset all" clears everything.
- *
- * The panel copies the sidebar card's background/border and X's Chirp font so it looks native, and
- * the checkboxes follow the user's chosen X accent colour. Everything re-applies on each timeline
- * change, since X virtualises (recycles) tweet nodes as you scroll.
- *
- * Note: tweet classification relies on a few hashed X class names and English UI strings
- * ("Pinned", "reposted", "Replying to"); these may need updating after an X redesign.
+ * Panel above the "You might like" card on X/Twitter profiles: whole-tweet filters (with counters),
+ * per-tweet modifiers, persistent settings, minimise and reset. Re-applies on every timeline change
+ * since X recycles tweet nodes. Relies on some hashed X classes and English UI strings.
  */
 
 (function () {
@@ -37,14 +27,13 @@
   const BOX_ID     = 'cee-vp-box';
   const BODY_ID    = 'cee-vp-body';
   const TITLE_ID   = 'cee-vp-title';
-  const TITLE_TEXT = 'Twitter Profile Viewer +';
+  const TITLE_TEXT = 'Twitter Viewer +';
   const STORE_KEY  = 'cee-vp-state';
 
-  // X sets its font per-element via utility classes, not on a cascading parent, so an inserted
-  // <div> falls back to the browser serif default. Apply X's Chirp stack explicitly.
+  // X sets its font per-element, not on a parent, so apply Chirp explicitly (else serif).
   const FONT_STACK = 'TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
-  // Leaf media nodes (image / video / link-card); used for both detection and the media modifiers.
+  // Leaf media nodes, for detection and the media modifiers.
   const MEDIA_SEL = '[data-testid="tweetPhoto"], [data-testid="videoComponent"], ' +
                     '[data-testid="card.wrapper"], [data-testid="card.layoutLarge.media"]';
   const COMPACT_MEDIA_MAX = '120px';
@@ -60,14 +49,30 @@
     { key: 'textonly',   label: 'Hide text-only posts' },
   ];
 
-  // Per-tweet display modifiers (act on parts of every visible tweet, not whole-tweet hiding).
+  // Per-tweet modifiers (act on parts of each tweet, not whole-tweet hiding).
   const MODIFIERS = [
-    { key: 'compact',   label: 'Compact posts' },
-    { key: 'hideText',  label: 'Hide post text' },
-    { key: 'hideMedia', label: 'Hide media' },
+    { key: 'compact',        label: 'Compact posts' },
+    { key: 'hideText',       label: 'Hide post text' },
+    { key: 'hideMedia',      label: 'Hide media' },
+    { key: 'hideEngagement', label: 'Hide engagement bar' },
   ];
 
-  // Toggle state plus cumulative per-filter id sets so counters don't drop when X recycles nodes.
+  // Row icons (24x24 paths). X's own glyphs where it has them.
+  const ICONS = {
+    pinned:         'M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z',
+    replies:        'M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.96-1.607 5.68-4.196 7.11l-8.054 4.46v-3.69h-.067c-4.49.1-8.183-3.51-8.183-8.01zm8.005-6c-3.317 0-6.005 2.69-6.005 6 0 3.37 2.77 6.08 6.138 6.01l.351-.01h1.761v2.3l5.087-2.81c1.951-1.08 3.163-3.13 3.163-5.36 0-3.39-2.744-6.13-6.129-6.13H9.756z',
+    quotes:         'M6 17h3l2-4V7H5v6h3zm8 0h3l2-4V7h-6v6h3z',
+    retweets:       'M4.5 3.88l4.432 4.14-1.364 1.46L5.5 7.55V16c0 1.1.896 2 2 2H13v2H7.5c-2.209 0-4-1.79-4-4V7.55L1.432 9.48.068 8.02 4.5 3.88zM16.5 6H11V4h5.5c2.209 0 4 1.79 4 4v8.45l2.068-1.93 1.364 1.46-4.432 4.14-4.432-4.14 1.364-1.46 2.068 1.93V8c0-1.1-.896-2-2-2z',
+    posts:          'M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM14 17H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z',
+    mediaposts:     'M3 5.5C3 4.119 4.119 3 5.5 3h13C19.881 3 21 4.119 21 5.5v13c0 1.381-1.119 2.5-2.5 2.5h-13C4.119 21 3 19.881 3 18.5v-13zM5.5 5c-.276 0-.5.224-.5.5v9.086l3-3 3 3 5-5 3 3V5.5c0-.276-.224-.5-.5-.5h-13zM19 15.414l-3-3-5 5-3-3-3 3V18.5c0 .276.224.5.5.5h13c.276 0 .5-.224.5-.5v-3.086zM9.75 7C8.784 7 8 7.784 8 8.75s.784 1.75 1.75 1.75 1.75-.784 1.75-1.75S10.716 7 9.75 7z',
+    textonly:       'M14 17H4v2h10v-2zm6-8H4v2h16V9zM4 15h16v-2H4v2zM4 5v2h16V5H4z',
+    compact:        'M7.41 18.59L8.83 20 12 16.83 15.17 20l1.41-1.41L12 14l-4.59 4.59zm9.18-13.18L15.17 4 12 7.17 8.83 4 7.41 5.41 12 10l4.59-4.59z',
+    hideText:       'M14 17H4v2h10v-2zm6-8H4v2h16V9zM4 15h16v-2H4v2zM4 5v2h16V5H4z',
+    hideMedia:      'M3 5.5C3 4.119 4.119 3 5.5 3h13C19.881 3 21 4.119 21 5.5v13c0 1.381-1.119 2.5-2.5 2.5h-13C4.119 21 3 19.881 3 18.5v-13zM5.5 5c-.276 0-.5.224-.5.5v9.086l3-3 3 3 5-5 3 3V5.5c0-.276-.224-.5-.5-.5h-13zM19 15.414l-3-3-5 5-3-3-3 3V18.5c0 .276.224.5.5.5h13c.276 0 .5-.224.5-.5v-3.086zM9.75 7C8.784 7 8 7.784 8 8.75s.784 1.75 1.75 1.75 1.75-.784 1.75-1.75S10.716 7 9.75 7z',
+    hideEngagement: 'M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-1.243.07-2.349.78-2.91 1.91-.552 1.12-.633 2.78.479 4.82 1.074 1.97 3.257 4.27 7.129 6.61 3.87-2.34 6.052-4.64 7.126-6.61 1.111-2.04 1.03-3.7.477-4.82-.561-1.13-1.666-1.84-2.908-1.91zm4.187 7.69c-1.351 2.48-4.001 5.12-8.379 7.67l-.503.3-.504-.3c-4.379-2.55-7.029-5.19-8.382-7.67-1.36-2.5-1.41-4.86-.514-6.67.887-1.79 2.647-2.91 4.601-3.01 1.651-.09 3.368.56 4.798 2.01 1.429-1.45 3.146-2.1 4.796-2.01 1.954.1 3.714 1.22 4.601 3.01.896 1.81.846 4.17-.514 6.67z',
+  };
+
+  // Toggle state + cumulative id sets so counters survive node recycling.
   const state     = {};
   const seen      = {}; // ids ever classified into a filter
   const hiddenIds = {}; // ids actually hidden while a filter was on
@@ -116,7 +121,7 @@
     return heading ? (heading.querySelector('span') || heading) : null;
   }
 
-  // The rounded sidebar card wrapping the section (first ancestor with a real border-radius).
+  // The rounded sidebar card (first ancestor with a real border-radius).
   function findCard(aside) {
     let el = aside;
     for (let i = 0; i < 6 && el && el !== document.body; i++) {
@@ -221,7 +226,17 @@
     return btn;
   }
 
-  // One toggle row: bold label (+ optional counter) on the left, checkbox on the right.
+  // 18px row icon, or null if no glyph for the key.
+  function buildIcon(key, color) {
+    if (!ICONS[key]) return null;
+    const span = document.createElement('span');
+    Object.assign(span.style, { flex: '0 0 auto', display: 'inline-flex', alignItems: 'center' });
+    span.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" ' +
+      'style="fill:' + color + '"><path d="' + ICONS[key] + '"/></svg>';
+    return span;
+  }
+
+  // One toggle row: icon + bold label (+ optional counter) on the left, checkbox on the right.
   function buildRow(item, headingTextEl, withCounter) {
     const themedColor = headingTextEl ? getComputedStyle(headingTextEl).color : '#e7e9ea';
 
@@ -232,7 +247,10 @@
     });
 
     const left = document.createElement('span');
-    Object.assign(left.style, { display: 'inline-flex', alignItems: 'baseline', gap: '6px', minWidth: '0' });
+    Object.assign(left.style, { display: 'inline-flex', alignItems: 'center', gap: '8px', minWidth: '0' });
+
+    const icon = buildIcon(item.key, themedColor);
+    if (icon) left.append(icon);
 
     const text = document.createElement('span');
     text.textContent = item.label;
@@ -287,7 +305,7 @@
     applyFilters();
   }
 
-  // Readable checkmark colour for a given accent (black on light accents like yellow, else white).
+  // Checkmark colour for an accent (black on light accents, else white).
   function contrastOn(color) {
     let r, g, b;
     const rgb = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
@@ -300,8 +318,7 @@
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#0f1419' : '#fff';
   }
 
-  // The user's chosen X accent colour. The "Post" button can be white, so read the accent from
-  // Control Panel for Twitter's CSS var if present, otherwise from an accent-coloured link.
+  // The user's X accent: Control Panel for Twitter's CSS var, else an accent-coloured link.
   function accentColors() {
     let bg = '';
     try { bg = getComputedStyle(document.body).getPropertyValue('--cpft-theme').trim(); } catch (e) {}
@@ -372,7 +389,7 @@
     return m ? { author: m[1].toLowerCase(), id: m[2] } : { author: null, id: null };
   }
 
-  // Classify a timeline cell (which may hold a multi-tweet conversation) -> { id, cats } or null.
+  // Classify a cell (may be a multi-tweet conversation) -> { id, cats } or null.
   function classify(cell) {
     const articles = Array.from(cell.querySelectorAll('[data-testid="tweet"]'));
     if (!articles.length) return null;
@@ -388,8 +405,7 @@
         retweet: /repost|retweet/.test(s),
         replyingTo: /replying to/i.test(a.textContent),
         quote: !!a.querySelector('div[role="link"] [data-testid="User-Name"]'),
-        // X's hashed thread-connector line. anyLine = part of a thread; upLine = continues from
-        // above (the reply itself, vs. a parent's down-line). Update these if reply-hiding breaks.
+        // Thread-connector line: anyLine = in a thread; upLine = the reply itself.
         anyLine: !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1'),
         upLine:  !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1.r-1p0dtai'),
       };
@@ -399,11 +415,9 @@
     const multi       = articles.length >= 2;
     const otherAuthor = !!owner && infos.some(x => x.author && x.author !== owner);
 
-    // Reply (counted): continues a thread, says "Replying to", or an in-cell conversation that
-    // includes another user's tweet.
+    // Reply: continues a thread, says "Replying to", or an in-cell convo with another author.
     const isReply = infos.some(x => x.upLine || x.replyingTo) || (multi && otherAuthor);
-    // Thread context (e.g. the parent tweet shown above a reply in its own cell): hidden with
-    // replies but not counted as a reply itself.
+    // A reply's parent context: hidden with replies but not counted.
     const isThreadPart = infos.some(x => x.anyLine) || isReply;
     const replyContext = isThreadPart && !isReply;
 
@@ -412,7 +426,7 @@
     const isQuote   = !isThreadPart && last.quote;
     const isPost    = !isPinned && !isRetweet && !isQuote && !isThreadPart;
 
-    // Orthogonal to type: does the cell contain any media?
+    // Independent of type: has media?
     const hasMedia = !!cell.querySelector(MEDIA_SEL);
 
     let id = null;
@@ -427,7 +441,7 @@
     };
   }
 
-  // A "Show more replies" / "Show this thread" expander cell (a conversation link, no tweet).
+  // A reply-expander cell (conversation link, no tweet).
   function isReplyExpander(cell) {
     if (cell.querySelector('[data-testid="tweet"]')) return false;
     if (cell.querySelector('a[href*="/i/status/"]')) return true;
@@ -436,9 +450,7 @@
 
   /* ----------------------------- per-tweet modifiers ----------------------------- */
 
-  // X reserves media height with a sibling padding-bottom spacer and absolutely positions the
-  // image/video over it, so resizing the leaf does nothing. Walk up to the container that owns the
-  // spacer (one shared container for a multi-image grid), stopping at the tweet boundary.
+  // Media height is reserved by a padding-bottom spacer, so resize that container, not the leaf.
   function aspectContainer(mediaEl) {
     let el = mediaEl;
     for (let i = 0; i < 10 && el && el.parentElement; i++) {
@@ -456,7 +468,7 @@
       tweet.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
         el.style.display = state.hideText ? 'none' : '';
       });
-      // "Show more" long-text expander is a sibling of tweetText, so hide/restore it too.
+      // "Show more" expander sits beside tweetText, so hide/restore it too.
       if (state.hideText || textWasActive) {
         tweet.querySelectorAll('span').forEach(sp => {
           if (sp.textContent.trim() !== 'Show more') return;
@@ -481,6 +493,11 @@
           target.style.display = '';
           target.style.maxHeight = ''; target.style.overflow = '';
         }
+      });
+      // Engagement bar (the reply / repost / like / views action row).
+      tweet.querySelectorAll('[data-testid="reply"]').forEach(btn => {
+        const bar = btn.closest('[role="group"]');
+        if (bar) bar.style.display = state.hideEngagement ? 'none' : '';
       });
     });
     textWasActive = state.hideText;
