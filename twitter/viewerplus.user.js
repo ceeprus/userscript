@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Twitter: Profile Viewer+
 // @namespace    https://github.com/ceeprus
-// @version      1.17
-// @description  Adds a themed panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets and plain posts (each with a live counter), plus compact-media, hide-post-text and hide-media toggles. Matches your X theme and accent colour.
+// @version      1.18
+// @description  Adds a themed panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text and hide-media toggles. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @match        https://x.com/*
 // @match        https://twitter.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @license      MIT
 // @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js
 // @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js
@@ -17,8 +18,10 @@
 /*
  * Inserts a panel above the "You might like" card in the right sidebar of an X/Twitter profile.
  *
- *  - Whole-tweet filters (with live counters): pinned, replies, quote retweets, retweets, posts.
+ *  - Whole-tweet filters (with live counters): pinned, replies, quote retweets, retweets, posts,
+ *    media posts, text-only posts.
  *  - Per-tweet modifiers: compact media, hide post text, hide media.
+ *  - Settings persist across sessions; the panel can be minimised; "Reset all" clears everything.
  *
  * The panel copies the sidebar card's background/border and X's Chirp font so it looks native, and
  * the checkboxes follow the user's chosen X accent colour. Everything re-applies on each timeline
@@ -32,20 +35,29 @@
   'use strict';
 
   const BOX_ID     = 'cee-vp-box';
+  const BODY_ID    = 'cee-vp-body';
   const TITLE_ID   = 'cee-vp-title';
   const TITLE_TEXT = 'Twitter Profile Viewer +';
+  const STORE_KEY  = 'cee-vp-state';
 
   // X sets its font per-element via utility classes, not on a cascading parent, so an inserted
   // <div> falls back to the browser serif default. Apply X's Chirp stack explicitly.
   const FONT_STACK = 'TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
+  // Leaf media nodes (image / video / link-card); used for both detection and the media modifiers.
+  const MEDIA_SEL = '[data-testid="tweetPhoto"], [data-testid="videoComponent"], ' +
+                    '[data-testid="card.wrapper"], [data-testid="card.layoutLarge.media"]';
+  const COMPACT_MEDIA_MAX = '120px';
+
   // Whole-tweet filters (shown with a live hidden/total counter).
   const FILTERS = [
-    { key: 'pinned',   label: 'Hide Pinned post' },
-    { key: 'replies',  label: 'Hide replies' },
-    { key: 'quotes',   label: 'Hide quote retweets' },
-    { key: 'retweets', label: 'Hide retweets' },
-    { key: 'posts',    label: 'Hide just posts' },
+    { key: 'pinned',     label: 'Hide Pinned post' },
+    { key: 'replies',    label: 'Hide replies' },
+    { key: 'quotes',     label: 'Hide quote retweets' },
+    { key: 'retweets',   label: 'Hide retweets' },
+    { key: 'posts',      label: 'Hide just posts' },
+    { key: 'mediaposts', label: 'Hide media posts' },
+    { key: 'textonly',   label: 'Hide text-only posts' },
   ];
 
   // Per-tweet display modifiers (act on parts of every visible tweet, not whole-tweet hiding).
@@ -55,16 +67,37 @@
     { key: 'hideMedia', label: 'Hide media' },
   ];
 
-  // Toggle state (session only) plus cumulative per-filter id sets so counters don't drop when X
-  // recycles tweet nodes during scrolling.
+  // Toggle state plus cumulative per-filter id sets so counters don't drop when X recycles nodes.
   const state     = {};
   const seen      = {}; // ids ever classified into a filter
   const hiddenIds = {}; // ids actually hidden while a filter was on
   FILTERS.forEach(f => { state[f.key] = false; seen[f.key] = new Set(); hiddenIds[f.key] = new Set(); });
   MODIFIERS.forEach(m => { state[m.key] = false; });
 
-  let activeProfile = null; // handle of the profile the counters currently belong to
+  let collapsed     = false; // panel minimised
+  let activeProfile = null;  // handle of the profile the counters currently belong to
   let textWasActive = false; // whether hide-post-text ran last pass (so we can undo "Show more")
+
+  /* -------------------------------- persistence -------------------------------- */
+
+  function loadState() {
+    let saved = null;
+    try { if (typeof GM_getValue === 'function') saved = GM_getValue(STORE_KEY, null); } catch (e) {}
+    if (!saved || typeof saved !== 'object') return;
+    if (saved.toggles) Object.keys(state).forEach(k => {
+      if (typeof saved.toggles[k] === 'boolean') state[k] = saved.toggles[k];
+    });
+    if (typeof saved.collapsed === 'boolean') collapsed = saved.collapsed;
+  }
+
+  function saveState() {
+    try {
+      if (typeof GM_setValue !== 'function') return;
+      const toggles = {};
+      Object.keys(state).forEach(k => { toggles[k] = state[k]; });
+      GM_setValue(STORE_KEY, { toggles, collapsed });
+    } catch (e) {}
+  }
 
   /* ------------------------------- locate the sidebar ------------------------------- */
 
@@ -108,42 +141,84 @@
       marginBottom: '16px', padding: '12px 16px', boxSizing: 'border-box',
     });
 
-    box.appendChild(buildTitle(headingTextEl));
+    box.appendChild(buildHeader(headingTextEl));
+
+    const body = document.createElement('div');
+    body.id = BODY_ID;
+    if (collapsed) body.style.display = 'none';
 
     const filters = document.createElement('div');
     Object.assign(filters.style, { display: 'flex', flexDirection: 'column', gap: '10px' });
     FILTERS.forEach(f => filters.appendChild(buildRow(f, headingTextEl, true)));
-    box.appendChild(filters);
+    body.appendChild(filters);
 
     const sep = document.createElement('div');
     Object.assign(sep.style, { borderTop: '1px solid ' + ref.borderTopColor, margin: '12px 0' });
-    box.appendChild(sep);
+    body.appendChild(sep);
 
     const mods = document.createElement('div');
     Object.assign(mods.style, { display: 'flex', flexDirection: 'column', gap: '10px' });
     MODIFIERS.forEach(m => mods.appendChild(buildRow(m, headingTextEl, false)));
-    box.appendChild(mods);
+    body.appendChild(mods);
 
+    body.appendChild(buildReset());
+    box.appendChild(body);
     return box;
   }
 
-  // Plain title styled like the "You might like" heading.
-  function buildTitle(headingTextEl) {
-    const el = document.createElement('div');
-    el.id = TITLE_ID;
-    el.textContent = TITLE_TEXT;
-    Object.assign(el.style, {
-      display: 'inline-block', cursor: 'default', marginBottom: '12px',
-      userSelect: 'text', WebkitUserSelect: 'text',
+  // Header: title + minimise chevron.
+  function buildHeader(headingTextEl) {
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      marginBottom: collapsed ? '0' : '12px',
     });
+
+    const title = document.createElement('div');
+    title.id = TITLE_ID;
+    title.textContent = TITLE_TEXT;
+    Object.assign(title.style, { cursor: 'default', userSelect: 'text', WebkitUserSelect: 'text', minWidth: '0' });
     if (headingTextEl) {
       const h = getComputedStyle(headingTextEl);
-      Object.assign(el.style, {
+      Object.assign(title.style, {
         fontFamily: FONT_STACK, fontSize: h.fontSize, fontWeight: h.fontWeight,
         fontStyle: h.fontStyle, lineHeight: h.lineHeight, letterSpacing: h.letterSpacing, color: h.color,
       });
     }
-    return el;
+
+    header.append(title, buildMinimize(header));
+    return header;
+  }
+
+  function buildMinimize(header) {
+    const btn = document.createElement('div');
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('aria-label', 'Minimise panel');
+    btn.tabIndex = 0;
+    Object.assign(btn.style, {
+      flex: '0 0 auto', marginLeft: '8px', padding: '2px', cursor: 'pointer',
+      color: '#71767b', display: 'flex', alignItems: 'center',
+    });
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" ' +
+      'style="transition:transform .15s ease;fill:currentColor">' +
+      '<path d="M3.543 8.96l1.414-1.42L12 14.59l7.043-7.05 1.414 1.42L12 17.41z"/></svg>';
+    const svg = btn.firstChild;
+    const apply = () => { svg.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)'; };
+    apply();
+
+    const toggle = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      collapsed = !collapsed;
+      apply();
+      const body = document.getElementById(BODY_ID);
+      if (body) body.style.display = collapsed ? 'none' : '';
+      header.style.marginBottom = collapsed ? '0' : '12px';
+      saveState();
+    };
+    btn.addEventListener('click', toggle);
+    btn.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') toggle(e); });
+    return btn;
   }
 
   // One toggle row: bold label (+ optional counter) on the left, checkbox on the right.
@@ -177,6 +252,39 @@
 
     row.append(left, buildCheckbox(item.key));
     return row;
+  }
+
+  // "Reset all" link styled like an X accent link.
+  function buildReset() {
+    const wrap = document.createElement('div');
+    wrap.style.marginTop = '12px';
+
+    const link = document.createElement('span');
+    link.textContent = 'Reset all';
+    link.setAttribute('role', 'button');
+    link.tabIndex = 0;
+    Object.assign(link.style, {
+      cursor: 'pointer', fontFamily: FONT_STACK, fontSize: '14px', color: accentColors().bg,
+    });
+    link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
+    link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+
+    const run = (e) => { e.preventDefault(); e.stopPropagation(); resetAll(); };
+    link.addEventListener('click', run);
+    link.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') run(e); });
+
+    wrap.appendChild(link);
+    return wrap;
+  }
+
+  function resetAll() {
+    Object.keys(state).forEach(k => { state[k] = false; });
+    FILTERS.forEach(f => hiddenIds[f.key].clear());
+    saveState();
+    const box = document.getElementById(BOX_ID);
+    if (box) box.remove();
+    ensureBox();
+    applyFilters();
   }
 
   // Readable checkmark colour for a given accent (black on light accents like yellow, else white).
@@ -236,6 +344,7 @@
       if (!state[key] && hiddenIds[key]) hiddenIds[key].clear(); // filters only; modifiers have none
       render();
       applyFilters();
+      saveState();
     };
     box.addEventListener('click', toggle);
     box.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') toggle(e); });
@@ -303,12 +412,18 @@
     const isQuote   = !isThreadPart && last.quote;
     const isPost    = !isPinned && !isRetweet && !isQuote && !isThreadPart;
 
+    // Orthogonal to type: does the cell contain any media?
+    const hasMedia = !!cell.querySelector(MEDIA_SEL);
+
     let id = null;
     for (let i = infos.length - 1; i >= 0; i--) { if (infos[i].id) { id = infos[i].id; break; } }
 
     return {
       id, replyContext,
-      cats: { pinned: isPinned, replies: isReply, quotes: isQuote, retweets: isRetweet, posts: isPost },
+      cats: {
+        pinned: isPinned, replies: isReply, quotes: isQuote, retweets: isRetweet, posts: isPost,
+        mediaposts: hasMedia, textonly: !hasMedia,
+      },
     };
   }
 
@@ -320,10 +435,6 @@
   }
 
   /* ----------------------------- per-tweet modifiers ----------------------------- */
-
-  const COMPACT_MEDIA_MAX = '120px';
-  const MEDIA_SEL = '[data-testid="tweetPhoto"], [data-testid="videoComponent"], ' +
-                    '[data-testid="card.wrapper"], [data-testid="card.layoutLarge.media"]';
 
   // X reserves media height with a sibling padding-bottom spacer and absolutely positions the
   // image/video over it, so resizing the leaf does nothing. Walk up to the container that owns the
@@ -434,6 +545,7 @@
     requestAnimationFrame(() => { scheduled = false; ensureBox(); applyFilters(); });
   }
 
+  loadState();
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
   schedule();
 })();
