@@ -8,7 +8,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 
 | Download | Description |
 | --- | --- |
-| [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds an icon-labelled panel to X/Twitter profiles to hide pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles. |
+| [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds an panel to X/Twitter profiles to hide multiple post types. |
 | [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds. |
 | [Steam Curator: Import Review Link from Backloggd](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js) | Adds a searchable "Import from Backloggd" box next to the "URL for full review" field on Steam Curator review-edit pages. |
 | [Backloggd: Copy Review Link](https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js) | Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards. |
