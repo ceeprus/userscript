@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.20
-// @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
+// @version      1.29
+// @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @match        https://x.com/*
@@ -70,6 +70,9 @@
     hideText:       'M14 17H4v2h10v-2zm6-8H4v2h16V9zM4 15h16v-2H4v2zM4 5v2h16V5H4z',
     hideMedia:      'M3 5.5C3 4.119 4.119 3 5.5 3h13C19.881 3 21 4.119 21 5.5v13c0 1.381-1.119 2.5-2.5 2.5h-13C4.119 21 3 19.881 3 18.5v-13zM5.5 5c-.276 0-.5.224-.5.5v9.086l3-3 3 3 5-5 3 3V5.5c0-.276-.224-.5-.5-.5h-13zM19 15.414l-3-3-5 5-3-3-3 3V18.5c0 .276.224.5.5.5h13c.276 0 .5-.224.5-.5v-3.086zM9.75 7C8.784 7 8 7.784 8 8.75s.784 1.75 1.75 1.75 1.75-.784 1.75-1.75S10.716 7 9.75 7z',
     hideEngagement: 'M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-1.243.07-2.349.78-2.91 1.91-.552 1.12-.633 2.78.479 4.82 1.074 1.97 3.257 4.27 7.129 6.61 3.87-2.34 6.052-4.64 7.126-6.61 1.111-2.04 1.03-3.7.477-4.82-.561-1.13-1.666-1.84-2.908-1.91zm4.187 7.69c-1.351 2.48-4.001 5.12-8.379 7.67l-.503.3-.504-.3c-4.379-2.55-7.029-5.19-8.382-7.67-1.36-2.5-1.41-4.86-.514-6.67.887-1.79 2.647-2.91 4.601-3.01 1.651-.09 3.368.56 4.798 2.01 1.429-1.45 3.146-2.1 4.796-2.01 1.954.1 3.714 1.22 4.601 3.01.896 1.81.846 4.17-.514 6.67z',
+    invert:         'M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z',
+    fastRetweet:    'M7 2v11h3v9l7-12h-4l4-8z',
+    hidePostVideo:  'M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z',
   };
 
   // Toggle state + cumulative id sets so counters survive node recycling.
@@ -78,10 +81,16 @@
   const hiddenIds = {}; // ids actually hidden while a filter was on
   FILTERS.forEach(f => { state[f.key] = false; seen[f.key] = new Set(); hiddenIds[f.key] = new Set(); });
   MODIFIERS.forEach(m => { state[m.key] = false; });
+  state.invert = false; // when on, filters become "show only checked" instead of "hide checked"
+  state.fastRetweet = false; // when on, the repost button confirms instantly, skipping the Quote menu
+  state.hidePostVideo = false; // when on, removes "Post Video" from the video right-click menu
 
-  let collapsed     = false; // panel minimised
-  let activeProfile = null;  // handle of the profile the counters currently belong to
-  let textWasActive = false; // whether hide-post-text ran last pass (so we can undo "Show more")
+  let collapsed       = false; // panel minimised
+  const groupCollapsed = { filters: false, display: false, tools: false }; // each section's minimise state
+  let activeProfile   = null;  // handle of the profile the counters currently belong to
+  let textWasActive   = false; // whether hide-post-text ran last pass (so we can undo "Show more")
+  let filtersWereActive = false; // ran the tweet-hiding pass last time (so we can restore once)
+  let modsWereActive    = false; // ran the modifier pass last time (so we can restore once)
 
   /* -------------------------------- persistence -------------------------------- */
 
@@ -93,6 +102,9 @@
       if (typeof saved.toggles[k] === 'boolean') state[k] = saved.toggles[k];
     });
     if (typeof saved.collapsed === 'boolean') collapsed = saved.collapsed;
+    if (saved.groups && typeof saved.groups === 'object') Object.keys(groupCollapsed).forEach(k => {
+      if (typeof saved.groups[k] === 'boolean') groupCollapsed[k] = saved.groups[k];
+    });
   }
 
   function saveState() {
@@ -100,7 +112,7 @@
       if (typeof GM_setValue !== 'function') return;
       const toggles = {};
       Object.keys(state).forEach(k => { toggles[k] = state[k]; });
-      GM_setValue(STORE_KEY, { toggles, collapsed });
+      GM_setValue(STORE_KEY, { toggles, collapsed, groups: groupCollapsed });
     } catch (e) {}
   }
 
@@ -109,9 +121,12 @@
   function findSection() {
     const aside = document.querySelector('aside[aria-label="Who to follow"]');
     if (aside) return aside;
-    const headings = document.querySelectorAll('aside[role="complementary"] [role="heading"]');
+    // Other named sidebar modules — single-post pages lead with "Relevant people".
+    const wanted = ['you might like', 'who to follow', 'relevant people'];
+    const headings = document.querySelectorAll(
+      'aside[role="complementary"] [role="heading"], [data-testid="sidebarColumn"] [role="heading"]');
     for (const h of headings) {
-      if (h.textContent.trim() === 'You might like') return h.closest('aside') || h.parentElement;
+      if (wanted.includes(h.textContent.trim().toLowerCase())) return h.closest('aside') || h.parentElement;
     }
     return null;
   }
@@ -152,26 +167,79 @@
     body.id = BODY_ID;
     if (collapsed) body.style.display = 'none';
 
-    const filters = document.createElement('div');
-    Object.assign(filters.style, { display: 'flex', flexDirection: 'column', gap: '10px' });
-    FILTERS.forEach(f => filters.appendChild(buildRow(f, headingTextEl, true)));
-    body.appendChild(filters);
+    const tools = [
+      { key: 'invert',        label: 'Show only checked' },
+      { key: 'fastRetweet',   label: 'Fast retweet' },
+      { key: 'hidePostVideo', label: 'Hide Post Video' },
+    ];
 
-    const sep = document.createElement('div');
-    Object.assign(sep.style, { borderTop: '1px solid ' + ref.borderTopColor, margin: '12px 0' });
-    body.appendChild(sep);
+    body.appendChild(buildGroup('Filters', 'filters', headingTextEl, FILTERS, true));
+    body.appendChild(buildSeparator(ref));
+    body.appendChild(buildGroup('Display', 'display', headingTextEl, MODIFIERS, false));
+    body.appendChild(buildSeparator(ref));
+    body.appendChild(buildGroup('Tools', 'tools', headingTextEl, tools, false));
 
-    const mods = document.createElement('div');
-    Object.assign(mods.style, { display: 'flex', flexDirection: 'column', gap: '10px' });
-    MODIFIERS.forEach(m => mods.appendChild(buildRow(m, headingTextEl, false)));
-    body.appendChild(mods);
-
-    body.appendChild(buildReset());
     box.appendChild(body);
     return box;
   }
 
-  // Header: title + minimise chevron.
+  function buildSeparator(ref) {
+    const sep = document.createElement('div');
+    Object.assign(sep.style, { borderTop: '1px solid ' + ref.borderTopColor, margin: '12px 0' });
+    return sep;
+  }
+
+  // A labelled, individually collapsible section of toggle rows.
+  function buildGroup(title, key, headingTextEl, items, withCounter) {
+    const wrap = document.createElement('div');
+
+    const rows = document.createElement('div');
+    Object.assign(rows.style, { display: 'flex', flexDirection: 'column', gap: '10px' });
+    if (groupCollapsed[key]) rows.style.display = 'none';
+    items.forEach(it => rows.appendChild(buildRow(it, headingTextEl, withCounter)));
+
+    const head = document.createElement('div');
+    head.setAttribute('role', 'button');
+    head.tabIndex = 0;
+    Object.assign(head.style, {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      cursor: 'pointer', marginBottom: groupCollapsed[key] ? '0' : '10px', userSelect: 'none',
+    });
+
+    const label = document.createElement('span');
+    label.textContent = title;
+    Object.assign(label.style, {
+      fontFamily: FONT_STACK, fontSize: '12px', fontWeight: '700', color: '#71767b',
+      letterSpacing: '.04em', textTransform: 'uppercase',
+    });
+
+    const chev = document.createElement('span');
+    Object.assign(chev.style, { flex: '0 0 auto', display: 'flex', alignItems: 'center', color: '#71767b' });
+    chev.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" ' +
+      'style="transition:transform .15s ease;fill:currentColor">' +
+      '<path d="M3.543 8.96l1.414-1.42L12 14.59l7.043-7.05 1.414 1.42L12 17.41z"/></svg>';
+    const svg = chev.firstChild;
+    const applyChev = () => { svg.style.transform = groupCollapsed[key] ? 'rotate(-90deg)' : 'rotate(0deg)'; };
+    applyChev();
+
+    const toggle = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      groupCollapsed[key] = !groupCollapsed[key];
+      rows.style.display = groupCollapsed[key] ? 'none' : 'flex';
+      head.style.marginBottom = groupCollapsed[key] ? '0' : '10px';
+      applyChev();
+      saveState();
+    };
+    head.addEventListener('click', toggle);
+    head.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') toggle(e); });
+
+    head.append(label, chev);
+    wrap.append(head, rows);
+    return wrap;
+  }
+
+  // Header: title + (reset, minimise) controls on the right.
   function buildHeader(headingTextEl) {
     const header = document.createElement('div');
     Object.assign(header.style, {
@@ -191,7 +259,11 @@
       });
     }
 
-    header.append(title, buildMinimize(header));
+    const controls = document.createElement('div');
+    Object.assign(controls.style, { flex: '0 0 auto', display: 'flex', alignItems: 'center' });
+    controls.append(buildReset(), buildMinimize(header));
+
+    header.append(title, controls);
     return header;
   }
 
@@ -272,27 +344,26 @@
     return row;
   }
 
-  // "Reset all" link styled like an X accent link.
+  // "Reset all" as a refresh-icon button (sits left of the minimise chevron in the header).
   function buildReset() {
-    const wrap = document.createElement('div');
-    wrap.style.marginTop = '12px';
-
-    const link = document.createElement('span');
-    link.textContent = 'Reset all';
-    link.setAttribute('role', 'button');
-    link.tabIndex = 0;
-    Object.assign(link.style, {
-      cursor: 'pointer', fontFamily: FONT_STACK, fontSize: '14px', color: accentColors().bg,
+    const btn = document.createElement('div');
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('aria-label', 'Reset all');
+    btn.title = 'Reset all';
+    btn.tabIndex = 0;
+    Object.assign(btn.style, {
+      flex: '0 0 auto', marginLeft: '8px', padding: '2px', cursor: 'pointer',
+      color: '#71767b', display: 'flex', alignItems: 'center',
     });
-    link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
-    link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill:currentColor">' +
+      '<path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
+    btn.addEventListener('mouseenter', () => { btn.style.color = '#e7e9ea'; });
+    btn.addEventListener('mouseleave', () => { btn.style.color = '#71767b'; });
 
     const run = (e) => { e.preventDefault(); e.stopPropagation(); resetAll(); };
-    link.addEventListener('click', run);
-    link.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') run(e); });
-
-    wrap.appendChild(link);
-    return wrap;
+    btn.addEventListener('click', run);
+    btn.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') run(e); });
+    return btn;
   }
 
   function resetAll() {
@@ -399,12 +470,23 @@
       const { author, id } = permalinkInfo(a);
       const ctx = a.querySelector('[data-testid="socialContext"]');
       const s = ctx ? ctx.textContent.toLowerCase() : '';
+
+      // The quoted-tweet wrapper, so its nested text/avatars don't leak into this tweet's signals.
+      const quoteEl = a.querySelector('div[role="link"]');
+      const hasQuote = !!(quoteEl && quoteEl.querySelector('[data-testid="User-Name"]'));
+
+      // "Replying to" that belongs to THIS tweet — not to a reply shown inside the quoted tweet.
+      let replyingTo = false;
+      for (const d of a.querySelectorAll('div[dir="ltr"]')) {
+        if (hasQuote && quoteEl.contains(d)) continue;
+        if (/^\s*replying to/i.test(d.textContent)) { replyingTo = true; break; }
+      }
+
       return {
-        author, id,
+        author, id, replyingTo,
         pinned: /pinned/.test(s),
         retweet: /repost|retweet/.test(s),
-        replyingTo: /replying to/i.test(a.textContent),
-        quote: !!a.querySelector('div[role="link"] [data-testid="User-Name"]'),
+        quote: hasQuote,
         // Thread-connector line: anyLine = in a thread; upLine = the reply itself.
         anyLine: !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1'),
         upLine:  !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1.r-1p0dtai'),
@@ -415,16 +497,20 @@
     const multi       = articles.length >= 2;
     const otherAuthor = !!owner && infos.some(x => x.author && x.author !== owner);
 
-    // Reply: continues a thread, says "Replying to", or an in-cell convo with another author.
-    const isReply = infos.some(x => x.upLine || x.replyingTo) || (multi && otherAuthor);
+    // Explicit "reposted" context is a definitive retweet, even when the reposted tweet is itself
+    // a reply or quote — the owner's action is the repost, so it outranks reply/quote/thread.
+    const isRetweet = infos.some(x => x.retweet);
+
+    // Reply: thread line, "Replying to", or in-cell convo with another author. Reposts are excluded
+    // (a repost is the owner's repost, not their reply).
+    const isReply = !isRetweet && (infos.some(x => x.upLine || x.replyingTo) || (multi && otherAuthor));
     // A reply's parent context: hidden with replies but not counted.
-    const isThreadPart = infos.some(x => x.anyLine) || isReply;
+    const isThreadPart = !isRetweet && (infos.some(x => x.anyLine) || isReply);
     const replyContext = isThreadPart && !isReply;
 
-    const isPinned  = infos.some(x => x.pinned);
-    const isRetweet = !isThreadPart && infos.some(x => x.retweet);
-    const isQuote   = !isThreadPart && last.quote;
-    const isPost    = !isPinned && !isRetweet && !isQuote && !isThreadPart;
+    const isPinned = infos.some(x => x.pinned);
+    const isQuote  = !isRetweet && !isThreadPart && last.quote;
+    const isPost   = !isPinned && !isRetweet && !isQuote && !isThreadPart;
 
     // Independent of type: has media?
     const hasMedia = !!cell.querySelector(MEDIA_SEL);
@@ -463,6 +549,9 @@
   }
 
   function applyTweetMods() {
+    const modsActive = state.compact || state.hideText || state.hideMedia || state.hideEngagement;
+    if (!modsActive && !modsWereActive) return; // nothing to apply, nothing left to restore
+
     document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
       // Text
       tweet.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
@@ -501,6 +590,7 @@
       });
     });
     textWasActive = state.hideText;
+    modsWereActive = modsActive;
   }
 
   /* --------------------------------- apply / counters --------------------------------- */
@@ -513,32 +603,49 @@
       FILTERS.forEach(f => { seen[f.key].clear(); hiddenIds[f.key].clear(); });
     }
 
-    document.querySelectorAll('[data-testid="cellInnerDiv"]').forEach(cell => {
-      const info = classify(cell);
-      if (!info) {
-        // Non-tweet cell: hide orphaned "Show more replies" expanders together with replies.
-        cell.style.display = (state.replies && isReplyExpander(cell)) ? 'none' : '';
-        return;
-      }
-
-      let hide = false;
-      FILTERS.forEach(f => {
-        if (!info.cats[f.key]) return;
-        if (info.id) seen[f.key].add(info.id);
-        if (state[f.key]) { hide = true; if (info.id) hiddenIds[f.key].add(info.id); }
-      });
-      if (info.replyContext && state.replies) hide = true; // hide a reply's context tweet with it
-      cell.style.display = hide ? 'none' : '';
+    // Cheap and rare: strip "Post Video" from the video right-click menu.
+    document.querySelectorAll('[data-testid="postVideoContextMenuItem"]').forEach(el => {
+      el.style.display = state.hidePostVideo ? 'none' : '';
     });
 
     const box = document.getElementById(BOX_ID);
-    if (box) {
-      FILTERS.forEach(f => {
-        const el = box.querySelector('[data-counter="' + f.key + '"]');
-        if (!el) return;
-        const total = seen[f.key].size;
-        el.textContent = '(' + (state[f.key] ? hiddenIds[f.key].size : 0) + '/' + total + ')';
+    const anyFilterOn = !!box && FILTERS.some(f => state[f.key]);
+
+    // Only scan/classify cells while filtering is engaged, plus one pass to restore when it stops.
+    if (anyFilterOn || filtersWereActive) {
+      document.querySelectorAll('[data-testid="cellInnerDiv"]').forEach(cell => {
+        const info = classify(cell);
+        if (!info) {
+          // Non-tweet cell: "Show more replies" expanders track the replies filter.
+          let hideCell = false;
+          if (isReplyExpander(cell)) {
+            hideCell = state.invert ? (anyFilterOn && !state.replies) : state.replies;
+          }
+          cell.style.display = hideCell ? 'none' : '';
+          return;
+        }
+
+        let matched = false;
+        FILTERS.forEach(f => {
+          if (!info.cats[f.key]) return;
+          if (info.id) seen[f.key].add(info.id);
+          if (state[f.key]) { matched = true; if (info.id) hiddenIds[f.key].add(info.id); }
+        });
+        // A reply's parent context counts with the replies filter.
+        if (info.replyContext && state.replies) matched = true;
+
+        const hide = state.invert ? (anyFilterOn && !matched) : matched;
+        cell.style.display = hide ? 'none' : '';
       });
+
+      if (box) {
+        FILTERS.forEach(f => {
+          const el = box.querySelector('[data-counter="' + f.key + '"]');
+          if (!el) return;
+          el.textContent = '(' + (state[f.key] ? hiddenIds[f.key].size : 0) + '/' + seen[f.key].size + ')';
+        });
+      }
+      filtersWereActive = anyFilterOn;
     }
 
     applyTweetMods();
@@ -555,6 +662,25 @@
     card.parentNode.insertBefore(buildBox(card, findHeadingTextEl(section)), card);
   }
 
+  // Fast retweet: after the repost button is clicked, auto-confirm the repost when X's menu opens,
+  // skipping the Repost/Quote chooser. Observes only for a short window after each click.
+  function setupFastRetweet() {
+    let timer = null;
+    const obs = new MutationObserver(() => {
+      const confirm = document.querySelector('[data-testid="retweetConfirm"], [data-testid="unretweetConfirm"]');
+      if (confirm) { stop(); confirm.click(); }
+    });
+    function stop() { obs.disconnect(); if (timer) { clearTimeout(timer); timer = null; } }
+    document.addEventListener('click', (e) => {
+      if (!state.fastRetweet) return;
+      const t = e.target;
+      if (!t || !t.closest || !t.closest('[data-testid="retweet"], [data-testid="unretweet"]')) return;
+      obs.observe(document.body, { childList: true, subtree: true });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(stop, 1500); // give up if the menu never appears
+    }, true);
+  }
+
   let scheduled = false;
   function schedule() {
     if (scheduled) return;
@@ -563,6 +689,7 @@
   }
 
   loadState();
+  setupFastRetweet();
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
   schedule();
 })();
