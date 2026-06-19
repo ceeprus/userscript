@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.29
+// @version      1.30
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -75,7 +75,9 @@
     hidePostVideo:  'M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z',
   };
 
-  // Toggle state + cumulative id sets so counters survive node recycling.
+  // Toggle state + cumulative id sets so counters survive node recycling. The sets are capped so
+  // a marathon scroll can't grow them without bound (oldest ids drop once over the limit).
+  const ID_CAP    = 4000;
   const state     = {};
   const seen      = {}; // ids ever classified into a filter
   const hiddenIds = {}; // ids actually hidden while a filter was on
@@ -84,6 +86,13 @@
   state.invert = false; // when on, filters become "show only checked" instead of "hide checked"
   state.fastRetweet = false; // when on, the repost button confirms instantly, skipping the Quote menu
   state.hidePostVideo = false; // when on, removes "Post Video" from the video right-click menu
+
+  // Add to a Set, evicting the oldest entry if it would exceed ID_CAP (insertion order = age).
+  function addCapped(set, id) {
+    if (set.has(id)) return;
+    if (set.size >= ID_CAP) set.delete(set.values().next().value);
+    set.add(id);
+  }
 
   let collapsed       = false; // panel minimised
   const groupCollapsed = { filters: false, display: false, tools: false }; // each section's minimise state
@@ -628,8 +637,8 @@
         let matched = false;
         FILTERS.forEach(f => {
           if (!info.cats[f.key]) return;
-          if (info.id) seen[f.key].add(info.id);
-          if (state[f.key]) { matched = true; if (info.id) hiddenIds[f.key].add(info.id); }
+          if (info.id) addCapped(seen[f.key], info.id);
+          if (state[f.key]) { matched = true; if (info.id) addCapped(hiddenIds[f.key], info.id); }
         });
         // A reply's parent context counts with the replies filter.
         if (info.replyContext && state.replies) matched = true;
