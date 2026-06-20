@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.9
+// @version      2.0
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -29,6 +29,8 @@
     const MAX_CONCURRENT = 3;                                // parallel background fetches
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
     let   SCAN_LISTINGS = GM_getValue('sgai:scan', true);    // capsule badges on/off (toggle via menu)
+    let   HIDE_AI       = GM_getValue('sgai:hide', false);   // hide AI-disclosed games entirely (toggle via menu)
+    document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);
 
     /* ---------------- localized disclosure titles (data, MIT from seeeeew/aiwarningforsteam) ----- */
     const TITLES = ["AI Generated Content Disclosure","AI 生成内容披露","AI 生成內容聲明","AI生成コンテンツの開示",
@@ -64,6 +66,7 @@
         .sgai_inline{position:static;top:auto;left:auto;margin-left:8px;box-shadow:none;vertical-align:middle;cursor:default;}
         .sgai_desc{position:static;top:auto;left:auto;margin-top:8px;box-shadow:none;}
         .sgai_host{position:relative;}
+        [data-sgai-hide] .sgai_ai{display:none !important;}
     `);
 
     /* ---------------- cache (GM storage) ---------------- */
@@ -161,6 +164,21 @@
         return 'corner';
     }
 
+    // The element to hide when "hide AI games" is on — the whole card/row, not just the badge host.
+    // (Never an app page or the legacy hover tooltip.)
+    function hideTarget(el, kind) {
+        if (kind === 'title') return null;
+        if (kind === 'desc')  return el.closest('.LibraryAssetExpandedDisplay, [class*="SaleSection"]') || el.parentElement;
+        const ds = el.closest('[data-ds-appid]');
+        if (ds) return ds.closest('.search_result_row') || ds;                       // normal store / search
+        return el.closest('.carousel__slide, .LibraryAssetExpandedDisplay, [class*="SaleSection"]') || el;  // sale capsule
+    }
+
+    function markAI(el, kind) {
+        const t = hideTarget(el, kind);
+        if (t) t.classList.add('sgai_ai');
+    }
+
     function capBadge(el, text, id) {
         // De-dupe per card: hover-preview popups (and some widgets) contain several links to the
         // same app — media block, header capsule, title. Claim the smallest ancestor that groups
@@ -175,6 +193,7 @@
 
         const kind = badgeKind(el);
         placeBadge(el, kind, text);
+        markAI(el, kind);
         managed.push({ el, kind, text });
     }
 
@@ -185,6 +204,7 @@
             const m = managed[i];
             if (!m.el.isConnected) { managed.splice(i, 1); continue; }
             placeBadge(m.el, m.kind, m.text);
+            markAI(m.el, m.kind);
         }
     }
 
@@ -267,8 +287,13 @@
     /* ---------------- menu ---------------- */
     if (typeof GM_registerMenuCommand !== 'undefined') {
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
-            (GM_listValues() || []).forEach(k => { if (k.startsWith('sgai:') && k !== 'sgai:scan') GM_deleteValue(k); });
+            (GM_listValues() || []).forEach(k => { if (/^sgai:\d+$/.test(k)) GM_deleteValue(k); });  // appid caches only
             alert('Steam AI cache cleared.');
+        });
+        GM_registerMenuCommand(`Hide AI-disclosed games: ${HIDE_AI ? 'ON' : 'OFF'} — toggle`, () => {
+            HIDE_AI = !HIDE_AI;
+            GM_setValue('sgai:hide', HIDE_AI);
+            document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);   // applies instantly
         });
         GM_registerMenuCommand(`Capsule badges: ${SCAN_LISTINGS ? 'ON' : 'OFF'} — toggle & reload`, () => {
             GM_setValue('sgai:scan', !SCAN_LISTINGS);
