@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.0
+// @version      2.2
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -28,6 +28,7 @@
     const TTL_NONE     =  7 * 24 * 60 * 60 * 1000;           // cache life for "no AI" (devs can add it later)
     const MAX_CONCURRENT = 3;                                // parallel background fetches
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
+    const BYPASS_AGE_GATE = true;                            // set age cookies so mature/adult game pages can be read
     let   SCAN_LISTINGS = GM_getValue('sgai:scan', true);    // capsule badges on/off (toggle via menu)
     let   HIDE_AI       = GM_getValue('sgai:hide', false);   // hide AI-disclosed games entirely (toggle via menu)
     document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);
@@ -97,6 +98,32 @@
     const slot = () => new Promise(r => { active < MAX_CONCURRENT ? (active++, r()) : queue.push(r); });
     const release = () => { active--; const n = queue.shift(); if (n) { active++; n(); } };
 
+    // Mature/adult app pages serve an age-check interstitial that has no disclosure section, so they'd
+    // be misread as "no AI". Setting the standard age cookies (lazily, only once we actually hit a gate)
+    // lets the retry read the real page. Controlled by BYPASS_AGE_GATE.
+    let ageCookiesSet = false;
+    function setAgeCookies() {
+        if (ageCookiesSet) return;
+        ageCookiesSet = true;
+        const opts = '; path=/; domain=.steampowered.com; max-age=31536000; SameSite=Lax';
+        document.cookie = 'birthtime=631152001' + opts;             // 1 Jan 1990
+        document.cookie = 'lastagecheckage=1-January-1990' + opts;
+        document.cookie = 'wants_mature_content=1' + opts;
+    }
+    const isAgeGate = (url, html) => url.includes('/agecheck') || /agegate_birthday|app_agegate|agegate_text_container/.test(html);
+
+    async function fetchAppPage(id) {
+        const url = `https://store.steampowered.com/app/${id}/?l=english&cc=us`;
+        let res = await fetch(url);
+        let html = await res.text();
+        if (BYPASS_AGE_GATE && isAgeGate(res.url, html)) {
+            setAgeCookies();
+            res = await fetch(url, { cache: 'reload' });
+            html = await res.text();
+        }
+        return html;
+    }
+
     const inflight = new Map();
     function lookup(id) {
         const c = cacheGet(id);
@@ -105,8 +132,7 @@
         const p = (async () => {
             await slot();
             try {
-                const res = await fetch(`https://store.steampowered.com/app/${id}/?l=english&cc=us`);
-                const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+                const doc = new DOMParser().parseFromString(await fetchAppPage(id), 'text/html');
                 const d = getDisclosure(doc);
                 cacheSet(id, d);                            // only cache successful reads
                 return d;
@@ -143,8 +169,8 @@
     const managed = [];   // badges we've placed, re-asserted if a React re-render strips them
 
     function placeBadge(el, kind, text) {
-        if (kind === 'title') {                                  // legacy #global_hover: next to title
-            const target = el.matches('.hover_title') ? el : el.querySelector('.hover_title');
+        if (kind === 'title') {                                  // hover tooltip / homepage preview: next to title
+            const target = el.matches('.hover_title, .tab_title') ? el : el.querySelector('.hover_title, .tab_title');
             if (!target || target.querySelector('.sgai_cap')) return;
             const b = makeBadge(text); b.classList.add('sgai_cap', 'sgai_inline'); target.appendChild(b);
         } else if (kind === 'desc') {                           // sale widget: its own line under the description
@@ -159,19 +185,18 @@
     }
 
     function badgeKind(el) {
-        if (el.matches('.hover_title') || el.querySelector('.hover_title')) return 'title';
+        if (el.matches('.hover_title, .tab_preview') || el.querySelector('.hover_title, .tab_title')) return 'title';
         if (el.matches('.StoreSaleWidgetShortDesc')) return 'desc';
         return 'corner';
     }
 
-    // The element to hide when "hide AI games" is on — the whole card/row, not just the badge host.
-    // (Never an app page or the legacy hover tooltip.)
+    // The element to hide when "hide AI games" is on — just this game's capsule, the nearest
+    // clickable /app/ anchor (or the row/element itself). Never the carousel slide: some slides
+    // (e.g. the upcoming-releases calendar) hold several different games.
     function hideTarget(el, kind) {
         if (kind === 'title') return null;
         if (kind === 'desc')  return el.closest('.LibraryAssetExpandedDisplay, [class*="SaleSection"]') || el.parentElement;
-        const ds = el.closest('[data-ds-appid]');
-        if (ds) return ds.closest('.search_result_row') || ds;                       // normal store / search
-        return el.closest('.carousel__slide, .LibraryAssetExpandedDisplay, [class*="SaleSection"]') || el;  // sale capsule
+        return el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
     }
 
     function markAI(el, kind) {
@@ -230,7 +255,7 @@
             if (/^\d+$/.test(id || '')) yield { el, id }; else el.dataset.sgai = 'skip';
         }
         for (const a of document.querySelectorAll('a[href*="/app/"]:not([data-sgai])')) {
-            if (a.closest('[data-ds-appid]')) { a.dataset.sgai = 'skip'; continue; }  // handled above
+            if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { a.dataset.sgai = 'skip'; continue; }  // data-ds-appid path handles these
             const m = a.getAttribute('href').match(/\/app\/(\d+)/);
             if (m && a.querySelector('img')) yield { el: a, id: m[1] };                // a capsule, not a text link
         }
@@ -245,18 +270,28 @@
             const id = widgetAppId(desc);
             if (id) yield { el: desc, id }; else desc.dataset.sgai = 'skip';
         }
+        // Homepage right-column preview panel: title + trailer, but no app link/appid — the id is
+        // only in the screenshot/trailer asset URLs, so resolve it the same way as sale widgets.
+        for (const p of document.querySelectorAll('.tab_preview:not([data-sgai])')) {
+            const id = widgetAppId(p);
+            if (id) yield { el: p, id }; else p.dataset.sgai = 'skip';
+        }
     }
 
-    // Find the app id for an element inside an expanded sale widget by climbing outward and reading
-    // either the widget's /app/ link or, failing that, any Steam asset URL (apps/<id>/...).
+    // Find the app id for an element that has no data-ds-appid or /app/ link (sale widgets, the
+    // homepage preview panel) by climbing outward and reading the first Steam asset URL — capsule
+    // <img>, CSS background-image, or trailer <source>.
     function widgetAppId(node) {
         for (let el = node, i = 0; el && i < 6; el = el.parentElement, i++) {
             const a = el.querySelector('a[href*="/app/"]');
             let m = a && a.getAttribute('href').match(/\/app\/(\d+)/);
             if (m) return m[1];
-            const img = el.querySelector('img[src*="/apps/"]');
-            m = img && img.getAttribute('src').match(/\/apps\/(\d+)\//);
-            if (m) return m[1];
+            const asset = el.querySelector('img[src*="/apps/"], [data-background-image-url*="/apps/"], [style*="/apps/"], source[src*="/store_trailers/"]');
+            if (asset) {
+                const s = asset.getAttribute('src') || asset.getAttribute('data-background-image-url') || asset.getAttribute('style') || '';
+                m = s.match(/\/apps\/(\d+)\//) || s.match(/\/store_trailers\/(?:steam\/apps\/)?(\d+)\//);
+                if (m) return m[1];
+            }
         }
         return null;
     }
