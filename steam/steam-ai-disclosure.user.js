@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.2
+// @version      2.3
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -250,6 +250,13 @@
     //     (CapsuleImageCtn, HeroCapsuleImageContainer, ...). Anything already covered by
     //     data-ds-appid is skipped to avoid double-badging.
     function* candidates() {
+        // Discovery Queue & similar "app video" cards: badge the prominent video/capsule area. It has
+        // no /app/ link inside — resolve the appid from its capsule image / trailer URL. Yielded first
+        // so it wins the per-card de-dupe over the smaller capsule link elsewhere in the card.
+        for (const v of document.querySelectorAll('.AppVideoCtn:not([data-sgai])')) {
+            const id = widgetAppId(v);
+            if (id) yield { el: v, id }; else v.dataset.sgai = 'skip';
+        }
         for (const el of document.querySelectorAll('[data-ds-appid]:not([data-sgai])')) {
             const id = el.dataset.dsAppid;
             if (/^\d+$/.test(id || '')) yield { el, id }; else el.dataset.sgai = 'skip';
