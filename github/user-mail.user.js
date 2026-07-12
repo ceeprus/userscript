@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.0.1
+// @version      5.1.0
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
 // @author       cee
@@ -16,9 +16,9 @@
 (function () {
   'use strict';
 
-  if (!location.pathname.match(/^\/[^/]+\/[^/]+\/commit\/[0-9a-f]+\/?$/i)) return;
+  const COMMIT_RE = /^\/[^/]+\/[^/]+\/commit\/[0-9a-f]+\/?$/i;
 
-  const patchUrl = location.href.replace(/\/?(\?.*)?$/, '.patch');
+  let patchUrl = '';
 
   // ── Status states ─────────────────────────────────────────────────────────
   // Each state: { icon, label, color, bg, border, spin }
@@ -313,7 +313,8 @@
   // ── Close on outside click / Escape ──────────────────────────────────────
 
   document.addEventListener('click', (e) => {
-    if (isOpen && popup && !popup.contains(e.target) && e.target !== pillEl)
+    if (isOpen && popup && !popup.contains(e.target) &&
+        (!pillEl || !pillEl.contains(e.target)))
       closePopup();
   }, true);
 
@@ -323,7 +324,25 @@
 
   // ── Go ────────────────────────────────────────────────────────────────────
 
-  tryInject(0);
+  // GitHub soft-navigates between commits via Turbo, so boot on every
+  // turbo load as well as the initial page load, resetting per-commit state.
+  function boot() {
+    if (!COMMIT_RE.test(location.pathname)) return;
+
+    const url = location.origin + location.pathname.replace(/\/$/, '') + '.patch';
+    if (url === patchUrl && pillEl && pillEl.isConnected) return;
+
+    closePopup();
+    if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = null; }
+    if (pillEl) { (pillEl.parentElement || pillEl).remove(); pillEl = null; }
+    currentEntries = [];
+    patchUrl = url;
+    tryInject(0);
+  }
+
+  boot();
+  document.addEventListener('turbo:load', boot);
+  document.addEventListener('turbo:render', boot);
 
   function esc(s) {
     return String(s)

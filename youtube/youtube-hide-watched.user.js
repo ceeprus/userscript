@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.22
+// @version      6.23
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds.
@@ -19,8 +19,8 @@
 // @grant        GM_setValue
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @downloadURL https://raw.githubusercontent.com/ceeprus/youtube-hide-watched/master/main.user.js
-// @updateURL https://raw.githubusercontent.com/ceeprus/youtube-hide-watched/master/main.user.js
+// @downloadURL https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js
+// @updateURL https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js
 // ==/UserScript==
 
 // To submit bugs or submit revisions please see visit the repository at:
@@ -945,14 +945,16 @@ const REGEX_USER = /.*\/@.*/u;
 			}
 		}
 
-		// Insert buttons into DOM
+		// Insert buttons into DOM. Remove-then-insert instead of replaceChild:
+		// if YouTube rebuilt the header, the old buttons live under a different
+		// parent and replaceChild would throw.
 		if (existingButtons) {
-			target.parentNode.replaceChild(buttonArea, existingButtons);
+			existingButtons.remove();
 			logDebug('Re-rendered menu buttons');
 		} else {
-			target.parentNode.insertBefore(buttonArea, target);
 			logDebug('Rendered menu buttons');
 		}
+		target.parentNode.insertBefore(buttonArea, target);
 	};
 
 	const run = debounce(async (mutations) => {

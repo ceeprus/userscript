@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.3
+// @version      2.4
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
-// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/steam/ai-disclosure.user.js
-// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/ai-disclosure.user.js
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
+// @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
+// @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
 // @match        https://store.steampowered.com/*
 // @run-at       document-idle
 // @grant        GM_setValue
