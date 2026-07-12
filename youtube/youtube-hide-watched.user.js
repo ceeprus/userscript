@@ -31,6 +31,19 @@
 const REGEX_CHANNEL = /.*\/(user|channel|c)\/.+\/videos/u;
 const REGEX_USER = /.*\/@.*/u;
 
+// Subscription-list scraping patterns (see loadSubs and friends)
+const REGEX_DATASYNC_ID = /"DATASYNC_ID":"([^"|]+)/;
+const REGEX_DELEGATED_SESSION_ID = /"DELEGATED_SESSION_ID":"([^"]+)"/;
+const REGEX_CONTINUATION_TOKEN = /"continuationCommand":\{"token":"([^"]+)"/;
+const REGEX_SAPISID = /(?:^|;\s*)SAPISID=([^;]+)/;
+const REGEX_SECURE_3PAPISID = /(?:^|;\s*)__Secure-3PAPISID=([^;]+)/;
+const REGEX_INNERTUBE_API_KEY = /"INNERTUBE_API_KEY":"([^"]+)"/;
+const REGEX_INNERTUBE_CLIENT_VERSION =
+	/"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/;
+const REGEX_CLIENT_VERSION = /"clientVersion":"([^"]+)"/;
+const REGEX_LEADING_SLASH = /^\//;
+const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
+
 ((_undefined) => {
 	// Enable for debugging
 	const DEBUG = false;
@@ -84,17 +97,17 @@ const REGEX_USER = /.*\/@.*/u;
 				min: 0,
 				type: 'int',
 			},
+			SUBBED_FORCE_REFRESH: {
+				default: false,
+				label: 'Refresh subscription list now (on Save)',
+				type: 'checkbox',
+			},
 			SUBBED_REFRESH_HOURS: {
 				default: 24,
 				label: 'Refresh Subscription List Every (hours)',
 				max: 720,
 				min: 1,
 				type: 'int',
-			},
-			SUBBED_FORCE_REFRESH: {
-				default: false,
-				label: 'Refresh subscription list now (on Save)',
-				type: 'checkbox',
 			},
 		},
 		id: 'YouTubeHideWatchedVideos',
@@ -256,13 +269,13 @@ const REGEX_USER = /.*\/@.*/u;
 			type: 'toggle',
 		},
 		{
+			global: true,
 			icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 8H4V6h16v2zm-2-6H6v2h12V2zm4 10v8c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2v-8c0-1.1.9-2 2-2h16c1.1 0 2 .9 2 2zm-6 4l-6-3.27v6.53L16 16z"/></svg>',
 			iconHidden:
 				'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 8H4V6h16v2zm-2-6H6v2h12V2zm4 10v8c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2v-8c0-1.1.9-2 2-2h16c1.1 0 2 .9 2 2zm-6 4l-6-3.27v6.53L16 16z"/><path fill="none" stroke="currentColor" stroke-width="2.4" d="M3 21 21 3"/></svg>',
 			name: 'Toggle Subscribed Channels (homepage)',
 			stateKey: 'YTHWV_STATE_SUBBED',
 			type: 'toggle',
-			global: true,
 		},
 		{
 			icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="currentColor" d="M12 9.5a2.5 2.5 0 0 1 0 5 2.5 2.5 0 0 1 0-5m0-1c-1.93 0-3.5 1.57-3.5 3.5s1.57 3.5 3.5 3.5 3.5-1.57 3.5-3.5-1.57-3.5-3.5-3.5zM13.22 3l.55 2.2.13.51.5.18c.61.23 1.19.56 1.72.98l.4.32.5-.14 2.17-.62 1.22 2.11-1.63 1.59-.37.36.08.51c.05.32.08.64.08.98s-.03.66-.08.98l-.08.51.37.36 1.63 1.59-1.22 2.11-2.17-.62-.5-.14-.4.32c-.53.43-1.11.76-1.72.98l-.5.18-.13.51-.55 2.24h-2.44l-.55-2.2-.13-.51-.5-.18c-.6-.23-1.18-.56-1.72-.99l-.4-.32-.5.14-2.17.62-1.21-2.12 1.63-1.59.37-.36-.08-.51c-.05-.32-.08-.65-.08-.98s.03-.66.08-.98l.08-.51-.37-.36L3.6 8.56l1.22-2.11 2.17.62.5.14.4-.32c.53-.44 1.11-.77 1.72-.99l.5-.18.13-.51.54-2.21h2.44M14 2h-4l-.74 2.96c-.73.27-1.4.66-2 1.14l-2.92-.83-2 3.46 2.19 2.13c-.06.37-.09.75-.09 1.14s.03.77.09 1.14l-2.19 2.13 2 3.46 2.92-.83c.6.48 1.27.87 2 1.14L10 22h4l.74-2.96c.73-.27 1.4-.66 2-1.14l2.92.83 2-3.46-2.19-2.13c.06-.37.09-.75.09-1.14s-.03-.77-.09-1.14l2.19-2.13-2-3.46-2.92.83c-.6-.48-1.27-.87-2-1.14L14 2z"/></svg>',
@@ -628,8 +641,7 @@ const REGEX_USER = /.*\/@.*/u;
 	const getUserId = () => {
 		const html = document.documentElement.innerHTML;
 		const m =
-			html.match(/"DATASYNC_ID":"([^"|]+)/) ||
-			html.match(/"DELEGATED_SESSION_ID":"([^"]+)"/);
+			html.match(REGEX_DATASYNC_ID) || html.match(REGEX_DELEGATED_SESSION_ID);
 		return m ? m[1] : 'default';
 	};
 
@@ -646,7 +658,7 @@ const REGEX_USER = /.*\/@.*/u;
 		)) {
 			handles.add(m[1].toLowerCase());
 		}
-		return { ids: [...ids], handles: [...handles] };
+		return { handles: [...handles], ids: [...ids] };
 	};
 
 	// Max number of continuation pages to walk when collecting subscriptions
@@ -658,7 +670,7 @@ const REGEX_USER = /.*\/@.*/u;
 	};
 
 	const getContinuationToken = (text) => {
-		const m = text.match(/"continuationCommand":\{"token":"([^"]+)"/);
+		const m = text.match(REGEX_CONTINUATION_TOKEN);
 		return m ? m[1] : null;
 	};
 
@@ -667,10 +679,8 @@ const REGEX_USER = /.*\/@.*/u;
 	// of a logged-out response.
 	const sapisidHash = async () => {
 		try {
-			const sapisid = (
-				document.cookie.match(/(?:^|;\s*)SAPISID=([^;]+)/) ||
-				document.cookie.match(/(?:^|;\s*)__Secure-3PAPISID=([^;]+)/)
-			)?.[1];
+			const sapisid = (document.cookie.match(REGEX_SAPISID) ||
+				document.cookie.match(REGEX_SECURE_3PAPISID))?.[1];
 			if (!sapisid) return null;
 			const origin = 'https://www.youtube.com';
 			const ts = Math.floor(Date.now() / 1000);
@@ -726,13 +736,13 @@ const REGEX_USER = /.*\/@.*/u;
 			});
 			const html = await res.text();
 			let parsed = parseSubsFromHtml(html);
-			parsed.ids.forEach((x) => ids.add(x));
-			parsed.handles.forEach((x) => handles.add(x));
+			for (const x of parsed.ids) ids.add(x);
+			for (const x of parsed.handles) handles.add(x);
 
-			const apiKey = matchFirst(html, /"INNERTUBE_API_KEY":"([^"]+)"/);
+			const apiKey = matchFirst(html, REGEX_INNERTUBE_API_KEY);
 			const clientVersion =
-				matchFirst(html, /"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/) ||
-				matchFirst(html, /"clientVersion":"([^"]+)"/);
+				matchFirst(html, REGEX_INNERTUBE_CLIENT_VERSION) ||
+				matchFirst(html, REGEX_CLIENT_VERSION);
 			const auth = await sapisidHash();
 			let token = getContinuationToken(html);
 			const seen = new Set();
@@ -752,25 +762,25 @@ const REGEX_USER = /.*\/@.*/u;
 					const cres = await fetch(
 						`https://www.youtube.com/youtubei/v1/browse?key=${apiKey}&prettyPrint=false`,
 						{
-							method: 'POST',
-							credentials: 'include',
-							headers: {
-								'Content-Type': 'application/json',
-								Authorization: auth,
-								'X-Origin': 'https://www.youtube.com',
-								'X-Goog-AuthUser': '0',
-							},
 							body: JSON.stringify({
 								context: {
 									client: {
 										clientName: 'WEB',
 										clientVersion: clientVersion || '2.20240101.00.00',
-										hl: 'en',
 										gl: 'US',
+										hl: 'en',
 									},
 								},
 								continuation: token,
 							}),
+							credentials: 'include',
+							headers: {
+								Authorization: auth,
+								'Content-Type': 'application/json',
+								'X-Goog-AuthUser': '0',
+								'X-Origin': 'https://www.youtube.com',
+							},
+							method: 'POST',
 						},
 					);
 					if (!cres.ok) break;
@@ -780,17 +790,17 @@ const REGEX_USER = /.*\/@.*/u;
 				}
 				const before = ids.size + handles.size;
 				parsed = parseSubsFromHtml(json);
-				parsed.ids.forEach((x) => ids.add(x));
-				parsed.handles.forEach((x) => handles.add(x));
+				for (const x of parsed.ids) ids.add(x);
+				for (const x of parsed.handles) handles.add(x);
 				token = getContinuationToken(json);
 				if (ids.size + handles.size === before && !token) break;
 			}
 
 			if (ids.size || handles.size) {
 				const out = {
-					updated: Date.now(),
-					ids: [...ids],
 					handles: [...handles],
+					ids: [...ids],
+					updated: Date.now(),
 				};
 				await stateSet(key, JSON.stringify(out));
 				subbedSet = new Set([...out.ids, ...out.handles]);
@@ -817,9 +827,9 @@ const REGEX_USER = /.*\/@.*/u;
 		} catch (_) {
 			/* href was already a path */
 		}
-		path = path.replace(/^\//, '');
+		path = path.replace(REGEX_LEADING_SLASH, '');
 		if (path.startsWith('@')) return path.split('/')[0].toLowerCase();
-		const m = path.match(/^channel\/(UC[0-9A-Za-z_-]{22})/);
+		const m = path.match(REGEX_CHANNEL_ID_PATH);
 		return m ? m[1] : null;
 	};
 
@@ -891,23 +901,23 @@ const REGEX_USER = /.*\/@.*/u;
 			// For toggle buttons, determine where in GM storage they track state.
 			// Most toggles track per-section; "global" toggles share one state.
 			const section = determineYoutubeSection();
-			const storageKey = stateKey
-				? global
-					? stateKey
-					: [stateKey, section].join('_')
-				: null;
+			let storageKey = null;
+			if (stateKey) {
+				storageKey = global ? stateKey : [stateKey, section].join('_');
+			}
 			const toggleButtonState = storageKey
 				? await stateGet(storageKey, 'normal')
 				: 'normal';
 
 			// Generate button DOM
 			const button = document.createElement('button');
-			button.title =
-				type === 'toggle'
-					? global
-						? `${name} : currently "${toggleButtonState}"`
-						: `${name} : currently "${toggleButtonState}" for section "${section}"`
-					: `${name}`;
+			if (type === 'toggle') {
+				button.title = global
+					? `${name} : currently "${toggleButtonState}"`
+					: `${name} : currently "${toggleButtonState}" for section "${section}"`;
+			} else {
+				button.title = `${name}`;
+			}
 			button.classList.add('YT-HWV-BUTTON');
 			if (toggleButtonState !== 'normal')
 				button.classList.add('YT-HWV-BUTTON-DISABLED');
