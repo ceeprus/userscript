@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.23
+// @version      6.24
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds.
@@ -43,6 +43,7 @@ const REGEX_INNERTUBE_CLIENT_VERSION =
 const REGEX_CLIENT_VERSION = /"clientVersion":"([^"]+)"/;
 const REGEX_LEADING_SLASH = /^\//;
 const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
+const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 
 ((_undefined) => {
 	// Enable for debugging
@@ -113,9 +114,6 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		id: 'YouTubeHideWatchedVideos',
 		title,
 	});
-
-	// Set defaults
-	localStorage.YTHWV_WATCHED = localStorage.YTHWV_WATCHED || 'false';
 
 	const logDebug = (...msgs) => {
 		if (DEBUG) console.debug('[YT-HWV]', msgs);
@@ -218,29 +216,10 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 
 .YT-HWV-BUTTON:focus,
 .YT-HWV-BUTTON:hover {
-	background: var(--yt-spec-additive-background);
+	background: var(--yt-sys-color-baseline--overlay-button-primary);
 }
 
 .YT-HWV-BUTTON-DISABLED { opacity: 0.5 }
-
-.YT-HWV-MENU {
-	background: #F8F8F8;
-	border: 1px solid #D3D3D3;
-	box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
-	display: none;
-	font-size: 12px;
-	margin-top: -1px;
-	padding: 10px;
-	position: absolute;
-	right: 0;
-	text-align: center;
-	top: 100%;
-	white-space: normal;
-	z-index: 9999;
-}
-
-.YT-HWV-MENU-ON { display: block; }
-.YT-HWV-MENUBUTTON-ON span { transform: rotate(180deg) }
 `);
 
 	const BUTTONS = [
@@ -389,9 +368,7 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		const mixesContainers = [];
 
 		document
-			.querySelectorAll(
-				'a[href*="start_radio=1"], a[href*="list=RD"], a[href*="&list=RD"]',
-			)
+			.querySelectorAll('a[href*="start_radio=1"], a[href*="list=RD"]')
 			.forEach((link) => {
 				const container =
 					// Home / Subscriptions grid cell
@@ -500,7 +477,9 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 							.classList.add('YT-HWV-HIDDEN-ROW-PARENT');
 					}
 				} else if (section === 'playlist') {
-					watchedItem = item.closest('ytd-playlist-video-renderer');
+					watchedItem =
+						item.closest('ytd-playlist-video-renderer') ||
+						item.closest('yt-lockup-view-model');
 				} else if (section === 'watch') {
 					watchedItem =
 						item.closest('ytd-compact-video-renderer') ||
@@ -645,6 +624,27 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		return m ? m[1] : 'default';
 	};
 
+	// Which signed-in account (authuser index) this tab uses, so
+	// subscription fetches hit the right account instead of account 0.
+	const getSessionIndex = () => {
+		const m = document.documentElement.innerHTML.match(REGEX_SESSION_INDEX);
+		return m ? m[1] : '0';
+	};
+
+	// Handles can arrive \u-escaped (ytInitialData embeds non-ASCII that
+	// way) — decode to raw unicode so they compare equal to decoded DOM hrefs.
+	const decodeHandle = (raw) => {
+		let handle = raw;
+		if (raw.includes('\\u')) {
+			try {
+				handle = JSON.parse(`"${raw}"`);
+			} catch (_) {
+				/* keep raw */
+			}
+		}
+		return handle.toLowerCase();
+	};
+
 	const parseSubsFromHtml = (html) => {
 		const ids = new Set();
 		const handles = new Set();
@@ -654,9 +654,9 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 			ids.add(m[1]);
 		}
 		for (const m of html.matchAll(
-			/"(?:canonicalBaseUrl|url)":"\\?\/(@[^"\\/]+)"/g,
+			/"(?:canonicalBaseUrl|url)":"\\?\/(@(?:\\u[0-9a-fA-F]{4}|[^"\\/])+)"/g,
 		)) {
-			handles.add(m[1].toLowerCase());
+			handles.add(decodeHandle(m[1]));
 		}
 		return { handles: [...handles], ids: [...ids] };
 	};
@@ -695,7 +695,7 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		}
 	};
 
-	const loadSubs = async (force = false) => {
+	const fetchSubs = async (force = false) => {
 		const key = `YTHWV_SUBS_${getUserId()}`;
 		let ttlHours = 24;
 		try {
@@ -731,9 +731,11 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 			// continuation tokens through the InnerTube API to collect EVERY
 			// subscription -- otherwise channels past the first page never make
 			// it into the set and can't be hidden.
-			const res = await fetch('https://www.youtube.com/feed/channels', {
-				credentials: 'include',
-			});
+			const authUser = getSessionIndex();
+			const res = await fetch(
+				`https://www.youtube.com/feed/channels?authuser=${authUser}`,
+				{ credentials: 'include' },
+			);
 			const html = await res.text();
 			let parsed = parseSubsFromHtml(html);
 			for (const x of parsed.ids) ids.add(x);
@@ -777,7 +779,7 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 							headers: {
 								Authorization: auth,
 								'Content-Type': 'application/json',
-								'X-Goog-AuthUser': '0',
+								'X-Goog-AuthUser': authUser,
 								'X-Origin': 'https://www.youtube.com',
 							},
 							method: 'POST',
@@ -818,6 +820,19 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		return subbedSet;
 	};
 
+	// Coalesce concurrent callers into one fetch walk — on a cold cache,
+	// every debounced run() would otherwise start its own 60-page
+	// continuation crawl while the set is still loading.
+	let subsLoadInFlight = null;
+	const loadSubs = (force = false) => {
+		if (!subsLoadInFlight) {
+			subsLoadInFlight = fetchSubs(force).finally(() => {
+				subsLoadInFlight = null;
+			});
+		}
+		return subsLoadInFlight;
+	};
+
 	// Reduce a channel link to a comparable id (@handle or UC id), or null
 	const normalizeChannelHref = (href) => {
 		if (!href) return null;
@@ -828,7 +843,16 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 			/* href was already a path */
 		}
 		path = path.replace(REGEX_LEADING_SLASH, '');
-		if (path.startsWith('@')) return path.split('/')[0].toLowerCase();
+		if (path.startsWith('@')) {
+			// Hrefs percent-encode non-ASCII handles; the subscription set
+			// stores them decoded, so decode before comparing.
+			const handle = path.split('/')[0];
+			try {
+				return decodeURIComponent(handle).toLowerCase();
+			} catch (_) {
+				return handle.toLowerCase();
+			}
+		}
 		const m = path.match(REGEX_CHANNEL_ID_PATH);
 		return m ? m[1] : null;
 	};
@@ -888,9 +912,6 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		// Find button area target
 		const target = findButtonAreaTarget();
 		if (!target) return;
-
-		// Did we already render the buttons?
-		const existingButtons = document.querySelector('.YT-HWV-BUTTONS');
 
 		// Generate buttons area DOM
 		const buttonArea = document.createElement('div');
@@ -955,16 +976,15 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 			}
 		}
 
-		// Insert buttons into DOM. Remove-then-insert instead of replaceChild:
-		// if YouTube rebuilt the header, the old buttons live under a different
-		// parent and replaceChild would throw.
-		if (existingButtons) {
-			existingButtons.remove();
-			logDebug('Re-rendered menu buttons');
-		} else {
-			logDebug('Rendered menu buttons');
+		// Insert buttons into DOM. Query and remove existing rows in the same
+		// sync block as the insert: renderButtons runs concurrently (debounced
+		// run + click handlers), and a reference taken before the awaits above
+		// goes stale, letting two overlapping calls each insert a row.
+		for (const el of document.querySelectorAll('.YT-HWV-BUTTONS')) {
+			el.remove();
 		}
 		target.parentNode.insertBefore(buttonArea, target);
+		logDebug('Rendered menu buttons');
 	};
 
 	const run = debounce(async (mutations) => {
@@ -973,8 +993,7 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		if (
 			mutations &&
 			mutations.length === 1 &&
-			(mutations[0].target.classList.contains('YT-HWV-BUTTON') ||
-				mutations[0].target.classList.contains('YT-HWV-BUTTON-SHORTS'))
+			mutations[0].target.classList.contains('YT-HWV-BUTTON')
 		) {
 			return;
 		}
@@ -987,28 +1006,6 @@ const REGEX_CHANNEL_ID_PATH = /^channel\/(UC[0-9A-Za-z_-]{22})/;
 		await updateClassOnSubscribedItems();
 		await renderButtons();
 	}, 250);
-
-	// ===========================================================
-
-	// Hijack all XHR calls
-	const send = XMLHttpRequest.prototype.send;
-	XMLHttpRequest.prototype.send = function (data) {
-		this.addEventListener(
-			'readystatechange',
-			function () {
-				if (
-					// Anytime more videos are fetched -- re-run script
-					this.responseURL.indexOf('browse_ajax?action_continuation') > 0
-				) {
-					setTimeout(() => {
-						run();
-					}, 0);
-				}
-			},
-			false,
-		);
-		send.call(this, data);
-	};
 
 	// ===========================================================
 
