@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.4
+// @version      2.5
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -191,17 +191,36 @@
         return 'corner';
     }
 
-    // The element to hide when "hide AI games" is on — just this game's capsule, the nearest
-    // clickable /app/ anchor (or the row/element itself). Never the carousel slide: some slides
-    // (e.g. the upcoming-releases calendar) hold several different games.
-    function hideTarget(el, kind) {
+    // The element to hide when "hide AI games" is on — the game's whole card, not just the
+    // capsule anchor. In the React store layouts (home sale widgets, /sale/ pages) the /app/
+    // anchor is only the capsule image; the title, tags, description and buttons are siblings.
+    // So grow outward to the largest ancestor that still only references this app, stopping
+    // before any container that also holds other games — that keeps carousel slides safe
+    // (e.g. the upcoming-releases calendar slide holds several different games).
+    const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget]';
+    function hideTarget(el, kind, id) {
         if (kind === 'title') return null;
-        if (kind === 'desc')  return el.closest('.LibraryAssetExpandedDisplay, [class*="SaleSection"]') || el.parentElement;
-        return el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
+        let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
+        for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
+            if (foreignApp(n, id)) break;
+            t = n;
+        }
+        return t;
     }
 
-    function markAI(el, kind) {
-        const t = hideTarget(el, kind);
+    // Does this container reference any app other than `id`?
+    function foreignApp(n, id) {
+        const own = n.getAttribute('data-ds-appid');
+        if (own && own !== id) return true;
+        for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
+            const lid = l.getAttribute('data-ds-appid') || ((l.getAttribute('href') || '').match(/\/app\/(\d+)/) || [])[1];
+            if (lid && lid !== id) return true;
+        }
+        return false;
+    }
+
+    function markAI(el, kind, id) {
+        const t = hideTarget(el, kind, id);
         if (t) t.classList.add('sgai_ai');
     }
 
@@ -219,8 +238,8 @@
 
         const kind = badgeKind(el);
         placeBadge(el, kind, text);
-        markAI(el, kind);
-        managed.push({ el, kind, text });
+        markAI(el, kind, id);
+        managed.push({ el, kind, text, id });
     }
 
     // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
@@ -230,7 +249,7 @@
             const m = managed[i];
             if (!m.el.isConnected) { managed.splice(i, 1); continue; }
             placeBadge(m.el, m.kind, m.text);
-            markAI(m.el, m.kind);
+            markAI(m.el, m.kind, m.id);
         }
     }
 
