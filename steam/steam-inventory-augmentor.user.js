@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.22.3
+// @version      3.23.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -216,14 +216,22 @@
 	// trade offer page items are old-style with descriptions/tags at top level.
 	const descOf = (item) => (item && (item.description || item)) || null;
 
+	// market-priceable: marketable now, or merely on a temporary trade/market hold
+	// (held CS2 items still have real market prices for their type)
+	const priceable = (d) => !!(d && d.market_hash_name && (d.marketable || lockDaysCached(d) > 0));
+
 	const descLines = (d) =>
 		(d.descriptions || []).map((x) => String(x.value || '').replace(/<[^>]*>/g, '').trim());
 
 	// "Tradable After: Monday, July 27, 2026 (7:00:00) GMT" -> days remaining
 	function lockDaysOf(d) {
+		if (d.cache_expiration) { // CS2 ships the hold end as an ISO timestamp
+			const days = Math.ceil((Date.parse(d.cache_expiration) - Date.now()) / 864e5);
+			if (days > 0) return days;
+		}
 		const all = [...(d.descriptions || []), ...(d.owner_descriptions || [])];
 		for (const x of all) {
-			const m = String(x.value || '').match(/Tradable After:?\s*(.+)/i);
+			const m = String(x.value || '').match(/Tradable(?:\s*[&\/]\s*Marketable)? After:?\s*(.+)/i);
 			if (!m) continue;
 			const ts = Date.parse(m[1].trim().replace(/\((.*?)\)/, '$1'));
 			if (!Number.isNaN(ts)) {
@@ -295,7 +303,7 @@
 			el.classList.add('sia-untrade');
 		}
 
-		if (CONFIG.priceIndicator && d.marketable && d.market_hash_name) {
+		if (CONFIG.priceIndicator && priceable(d)) {
 			requestPrice(el, d);
 		}
 
@@ -1150,7 +1158,7 @@
 			const rv = bptfRefOf(d, tf2Info(d));
 			if (rv != null) return rv;
 		}
-		if (d.marketable && d.market_hash_name) {
+		if (priceable(d)) {
 			const n = cachedPriceOf(d);
 			if (!Number.isNaN(n)) {
 				const keyRec = priceCache['440||Mann Co. Supply Crate Key'];
@@ -1743,7 +1751,7 @@
 			const v = refValueCached(d);
 			if (v > 0) total += v;
 			else unpriced++;
-			if (d.marketable && d.market_hash_name) {
+			if (priceable(d)) {
 				const rec = priceCache[`${d.appid}||${d.market_hash_name}`];
 				const n = rec ? parsePrice(rec.lp || rec.mp) : NaN;
 				if (!Number.isNaN(n)) {
@@ -2176,7 +2184,7 @@
 			let sum = 0, priced = 0, marketable = 0, sample = '';
 			for (const a of Object.values(assets)) {
 				const d = descOf(a);
-				if (!d || !d.marketable || !d.market_hash_name) continue;
+				if (!priceable(d)) continue;
 				marketable++;
 				const rec = priceCache[`${d.appid}||${d.market_hash_name}`];
 				const n = rec ? parsePrice(rec.lp || rec.mp) : NaN;
