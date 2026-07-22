@@ -11,6 +11,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | --- | --- |
 | [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds an panel to X/Twitter profiles to hide multiple post types. |
 | [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds. |
+| [Steam Inventory Augmentor](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-inventory-augmentor.user.js) | Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools. |
 | [Steam: AI Content Disclosure Badge](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js) | Flags Steam games that carry an "AI Generated Content Disclosure" with a badge on store, search, sale, hover, and app pages. |
 | [Steam Curator: Import Review Link from Backloggd](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js) | Adds a searchable "Import from Backloggd" box next to the "URL for full review" field on Steam Curator review-edit pages. |
 | [Steam Guide: Live Side Preview](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/guide-preview.user.js) | Docks a live rendered preview beside the Steam guide-section editor that updates as you type, reusing Steam's own BBCode styling. |
