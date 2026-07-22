@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.22.1
+// @version      3.22.2
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @match        *://steamcommunity.com/id/*/inventory*
@@ -1566,6 +1566,37 @@
 				input.type = 'checkbox';
 				input.checked = !!CONFIG[key];
 				row.append(input, ' ' + label);
+			}
+			if (key === 'backpackTfKey') {
+				// treat like a password: masked by default, eye to peek, verify to test
+				input.type = 'password';
+				const eye = document.createElement('button');
+				eye.type = 'button';
+				eye.textContent = '👁';
+				eye.title = 'Show/hide key';
+				eye.style.cssText = 'margin-left:4px;padding:1px 5px';
+				eye.addEventListener('click', (e) => {
+					e.preventDefault();
+					input.type = input.type === 'password' ? 'text' : 'password';
+				});
+				const check = document.createElement('button');
+				check.type = 'button';
+				check.textContent = 'Verify';
+				check.style.cssText = 'margin-left:4px;padding:1px 6px';
+				const status = document.createElement('span');
+				status.style.marginLeft = '6px';
+				check.addEventListener('click', async (e) => {
+					e.preventDefault();
+					status.textContent = '…';
+					status.style.color = '#b8b6b4';
+					const k = input.value.trim();
+					const j = k ? await bpFetchJson(
+						`https://backpack.tf/api/IGetCurrencies/v1?key=${encodeURIComponent(k)}`) : null;
+					const ok = j?.response?.success === 1;
+					status.textContent = ok ? '✓ valid' : '✗ invalid';
+					status.style.color = ok ? '#9CC83B' : '#D75A4A';
+				});
+				row.append(eye, check, status);
 			}
 			input.addEventListener('change', () => {
 				saved[key] = type === 'number' ? Number(input.value)
