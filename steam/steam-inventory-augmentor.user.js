@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.22.0
+// @version      3.22.1
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @match        *://steamcommunity.com/id/*/inventory*
@@ -1506,6 +1506,7 @@
 		['shrinkRenameWarning', 'Small rename warning'],
 		['Pricing', null, 'header'],
 		['backpackTfKey', 'backpack.tf API key', 'text'],
+		['Get a free key: log into backpack.tf → Settings → API Access', null, 'help'],
 		['priceIndicator', 'Market price badges + value card'],
 		['showBuyOrders', 'Badge shows buy order (instant sell)'],
 		['metalCounter', 'Metal counter'],
@@ -1536,6 +1537,16 @@
 			try { return JSON.parse(localStorage.getItem('siaSettings')) || {}; } catch { return {}; }
 		})();
 		for (const [key, label, type] of SETTINGS_SCHEMA) {
+			if (type === 'help') {
+				const a = document.createElement('a');
+				a.href = 'https://backpack.tf/developer';
+				a.target = '_blank';
+				a.rel = 'noopener';
+				a.textContent = key;
+				a.style.cssText = 'display:block;font-size:10px;color:#67c1f5;margin:0 0 4px 4px';
+				panel.appendChild(a);
+				continue;
+			}
 			if (type === 'header') {
 				const h = document.createElement('div');
 				h.textContent = key;
@@ -2156,6 +2167,10 @@
 			// TF2 only — ref values mean nothing for gems or CS2 skins
 			const activeIs440 = String(inv2?.m_appid ?? inv2?.appid ?? '') === '440' ||
 				!!document.querySelector('#inventories .inventory_ctn[id*="_440_"]:not([style*="display: none"])');
+			if (!CONFIG.backpackTfKey && activeIs440) {
+				parts.push('<div class="sia-vc-sub"><a href="https://backpack.tf/developer" target="_blank" rel="noopener" ' +
+					'style="color:#E8A33D">bp.tf values off — add your free API key in ⚙</a></div>');
+			}
 			if (bptf && bptfShow && activeIs440) {
 				let tradRef = 0, tradCount = 0;
 				for (const a of Object.values(assets)) {

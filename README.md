@@ -18,3 +18,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | [Backloggd: Copy Review Link](https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js) | Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards. |
 | [FFXIV Language Redirect](https://raw.githubusercontent.com/ceeprus/userscript/main/ffxiv/ffxiv-redirect.user.js) | Redirects any regional FFXIV site (DE/FR/EU/JP, etc.) to the NA version. |
 | [GitHub Commit Email Revealer](https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js) | Shows all commit author emails in a popup next to "Browse Files", with a live status indicator. |
+
+## Steam Inventory Augmentor — backpack.tf key
+
+Ref/key pricing needs a free backpack.tf API key: log into [backpack.tf](https://backpack.tf) with Steam → Settings → [API Access](https://backpack.tf/developer) → register a key (any site name works) → open your Steam inventory, click the script's ⚙ button, paste the key under Pricing → reload. The key stays in your browser only.
