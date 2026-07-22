@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.24.0
+// @version      3.24.1
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -558,7 +558,8 @@
 		const btn = document.createElement('button');
 		btn.id = 'sia-draft';
 		btn.type = 'button';
-		btn.textContent = `🕐 Restore draft (${ids.length})`;
+		btn.textContent = `🕐${ids.length}`;
+		btn.title = `Restore draft: put your last ${ids.length} selected items back into the trade`;
 		btn.addEventListener('click', () => {
 			const inv = W.g_ActiveInventory;
 			const assets = (inv && (inv.rgInventory || inv.m_rgAssets)) || {};
