@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.22.2
+// @version      3.22.3
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
+// @icon         https://steamcommunity.com/favicon.ico
 // @match        *://steamcommunity.com/id/*/inventory*
 // @match        *://steamcommunity.com/profiles/*/inventory*
 // @match        *://steamcommunity.com/tradeoffer/*
