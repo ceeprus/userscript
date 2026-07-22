@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.23.1
+// @version      3.24.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -73,6 +73,7 @@
 		rec: CUR_IMG('fWFc82js0fmoRAP-qOIPu5THSWqfSmTELLqcUywGkijVjZULUrsm1j-9xgEbZQsUYhTkhzJWhsO0Mv6NGucF1YJlscMEgDdvxVYsMLPkMmFjI1OSUvMHDPBp9lu0CnVluZQxA9Gwp-hIOVK4sMMNWF4'),
 		scrap: CUR_IMG('fWFc82js0fmoRAP-qOIPu5THSWqfSmTELLqcUywGkijVjZULUrsm1j-9xgEbZQsUYhTkhzJWhsPZAfOeD-VOn4phtsdQ32ZtxFYoN7PkYmVmIgeaUKNaX_Rjpwy8UHMz6pcxAIfnovUWJ1t9nYFqYw'),
 		key: CUR_IMG('fWFc82js0fmoRAP-qOIPu5THSWqfSmTELLqcUywGkijVjZULUrsm1j-9xgEAaR4uURrwvz0N252yVaDVWrRTno9m4ccG2GNqxlQoZrC2aG9hcVGUWflbX_drrVu5UGki5sAij6tOtQ'),
+		robot: CUR_IMG('fWFc82js0fmoRAP-qOIPu5THSWqfSmTELLqcUywGkijVjZULUrsm1j-9xgEGegouTxTgsSxQt5iwMv6NGucF1Y4wtsRXjmVuyVcuYrGxNGY-IwGVUqEGDKA-oA3uDSFq7JNnVYayrr5IOVK4CVyuuBM'),
 	};
 	const curIcon = (kind, title) =>
 		`<img class="sia-cur" src="${CUR_ICONS[kind]}" title="${title}" alt="${title}">`;
@@ -122,6 +123,7 @@
 		#sia-bar .sia-stack-on:hover { background: #8ed1f8; color: #16202d; }
 		#sia-bptf-toggle { padding: 3px 6px; }
 		#sia-bptf-toggle img { width: 16px; height: 16px; display: block; }
+		.sia-btn-ico { width: 16px; height: 16px; display: block; }
 		#sia-bptf-toggle.sia-bptf-off img { filter: grayscale(1); opacity: .35; }
 		.sia-cur { width: 16px; height: 16px; vertical-align: text-bottom; margin: 0 1px 0 4px; }
 		#tabcontent_inventory { position: relative; }
@@ -556,7 +558,7 @@
 		const btn = document.createElement('button');
 		btn.id = 'sia-draft';
 		btn.type = 'button';
-		btn.textContent = `Restore draft (${ids.length})`;
+		btn.textContent = `🕐 Restore draft (${ids.length})`;
 		btn.addEventListener('click', () => {
 			const inv = W.g_ActiveInventory;
 			const assets = (inv && (inv.rgInventory || inv.m_rgAssets)) || {};
@@ -1997,6 +1999,23 @@
 		afterTradeBatch();
 	}
 
+	// add every robot part (MvM crafting drops) from the active inventory
+	function giveAllRobotParts() {
+		const inv = W.g_ActiveInventory;
+		if (!inv) return;
+		const assets = Object.values((inv.rgInventory || inv.m_rgAssets) || {});
+		const inTrade = new Set([...document.querySelectorAll('#your_slots .item, #their_slots .item')]
+			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
+		for (const a of assets) {
+			if (!a || !a.element || inTrade.has(a.id || a.assetid)) continue;
+			const d = descOf(a) || {};
+			if (/^(Battle-Worn|Reinforced|Pristine) Robot /.test(d.name || '')) {
+				moveToTradeSafe(a.element);
+			}
+		}
+		afterTradeBatch();
+	}
+
 	// "Remove all" empties whichever side's inventory tab is open
 	function removeAllActiveSide() {
 		const theirs = !!(W.g_ActiveUser && W.UserThem && W.g_ActiveUser === W.UserThem);
@@ -2023,13 +2042,16 @@
 					`<button id="sia-metal-add" type="button">Add metal</button>`
 				: '') +
 			(CONFIG.tradeEmptyButtons
-				? `<button id="sia-give-dupes" type="button" title="Keep one of each, add all extra copies">Give dupes</button>`
+				? `<button id="sia-give-dupes" type="button" title="Keep one of each, add all extra copies">Give dupes</button>` +
+					`<button id="sia-give-robot" type="button" title="Add all your robot parts to the trade">` +
+					`<img class="sia-btn-ico" src="${CUR_ICONS.robot}" alt="robot parts"></button>`
 				: '');
 		if (!wrap.innerHTML) return;
 		bar.appendChild(wrap);
 		wrap.querySelector('#sia-metal-add')?.addEventListener('click', addMetalToTrade);
 		wrap.querySelector('#sia-add-page')?.addEventListener('click', addVisiblePage);
 		wrap.querySelector('#sia-give-dupes')?.addEventListener('click', giveAllDupes);
+		wrap.querySelector('#sia-give-robot')?.addEventListener('click', giveAllRobotParts);
 		wrap.querySelector('#sia-remove-all')?.addEventListener('click', removeAllActiveSide);
 		// gear rides at the end of row 2 on trade pages
 		const gearBtn = document.getElementById('sia-gear');
@@ -2112,6 +2134,7 @@
 			const activeTf2 = String(W.g_ActiveInventory?.m_appid ?? W.g_ActiveInventory?.appid ?? '') === '440';
 			setVis('sia-metal-amount', activeTf2);
 			setVis('sia-metal-add', activeTf2);
+			setVis('sia-give-robot', !theirs && activeTf2);
 
 			// pricing progress lives in the toolbar here — no value card on trades
 			const bar2 = document.getElementById('sia-bar');
