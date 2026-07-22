@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.24.1
+// @version      3.24.2
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1494,10 +1494,7 @@
 	function runLayout() {
 		const sortKey = document.getElementById('sia-sort')?.value || 'default';
 		const inv = W.g_ActiveInventory;
-		// stacking is for your own items only — never the trade partner's inventory
-		const theirTab = !!(document.getElementById('trade_yours') &&
-			W.g_ActiveUser && W.UserThem && W.g_ActiveUser === W.UserThem);
-		const go = () => applyFor(inv, sortKey, stackOn && !theirTab);
+		const go = () => applyFor(inv, sortKey, stackOn);
 		if (inv && typeof inv.BIsFullyLoaded === 'function' && inv.BIsFullyLoaded()) {
 			go(); // already complete: lay out synchronously, no promise round-trip
 		} else if (inv && typeof inv.LoadCompleteInventory === 'function') {
@@ -2130,7 +2127,6 @@
 				if (b) b.style.display = show ? '' : 'none';
 			};
 			setVis('sia-give-dupes', !theirs);
-			setVis('sia-stack', !theirs); // grouping never applies to their inventory
 			// metal box works on whichever TF2 inventory is open — theirs included
 			const activeTf2 = String(W.g_ActiveInventory?.m_appid ?? W.g_ActiveInventory?.appid ?? '') === '440';
 			setVis('sia-metal-amount', activeTf2);
