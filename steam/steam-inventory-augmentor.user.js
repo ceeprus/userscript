@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.23.0
+// @version      3.23.1
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -2108,10 +2108,10 @@
 			};
 			setVis('sia-give-dupes', !theirs);
 			setVis('sia-stack', !theirs); // grouping never applies to their inventory
-			// metal comes from a TF2 inventory on your side only
+			// metal box works on whichever TF2 inventory is open — theirs included
 			const activeTf2 = String(W.g_ActiveInventory?.m_appid ?? W.g_ActiveInventory?.appid ?? '') === '440';
-			setVis('sia-metal-amount', !theirs && activeTf2);
-			setVis('sia-metal-add', !theirs && activeTf2);
+			setVis('sia-metal-amount', activeTf2);
+			setVis('sia-metal-add', activeTf2);
 
 			// pricing progress lives in the toolbar here — no value card on trades
 			const bar2 = document.getElementById('sia-bar');
