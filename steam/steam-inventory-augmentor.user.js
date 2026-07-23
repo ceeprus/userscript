@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.24.2
+// @version      3.25.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1459,18 +1459,19 @@
 	}
 	wrapMatchItem();
 
-	function metalCounts() {
+	// descriptions of everything in the active inventory: engine assets when
+	// loaded, rendered item elements otherwise (some tabs never fill assets)
+	function activeDescs() {
 		const inv = W.g_ActiveInventory;
-		let descs = [];
 		const assets = inv && (inv.m_rgAssets || inv.rgInventory);
-		if (assets && Object.keys(assets).length) {
-			descs = Object.values(assets).map(descOf);
-		} else {
-			const invEl = getActiveInvEl();
-			if (invEl) descs = itemsOf(invEl).map((el) => descOf(el.rgItem));
-		}
+		if (assets && Object.keys(assets).length) return Object.values(assets).map(descOf);
+		const invEl = getActiveInvEl();
+		return invEl ? itemsOf(invEl).map((el) => descOf(el.rgItem)) : [];
+	}
+
+	function metalCounts() {
 		const c = { ref: 0, rec: 0, scrap: 0, keys: 0, is440: false };
-		for (const d of descs) {
+		for (const d of activeDescs()) {
 			if (!d) continue;
 			if (String(d.appid) === '440') c.is440 = true;
 			// permanently untradable metal can't be traded — don't count it
@@ -2200,11 +2201,13 @@
 
 		if (CONFIG.priceIndicator) {
 			const inv2 = W.g_ActiveInventory;
-			const assets = inv2 && (inv2.m_rgAssets || inv2.rgInventory) || {};
+			const descs = activeDescs();
 			let sum = 0, priced = 0, marketable = 0, sample = '';
-			for (const a of Object.values(assets)) {
-				const d = descOf(a);
+			for (const d of descs) {
 				if (!priceable(d)) continue;
+				// permanently untradable can't be sold or traded — don't count it
+				// (temporary trade/market holds still count)
+				if ((d.tradable === 0 || d.tradable === false) && lockDaysCached(d) <= 0) continue;
 				marketable++;
 				const rec = priceCache[`${d.appid}||${d.market_hash_name}`];
 				const n = rec ? parsePrice(rec.lp || rec.mp) : NaN;
@@ -2233,8 +2236,7 @@
 			}
 			if (bptf && bptfShow && activeIs440) {
 				let tradRef = 0, tradCount = 0;
-				for (const a of Object.values(assets)) {
-					const d = descOf(a);
+				for (const d of descs) {
 					if (!d) continue;
 					if ((d.tradable === 0 || d.tradable === false) && lockDaysCached(d) <= 0) continue;
 					const v = refValueCached(d);
