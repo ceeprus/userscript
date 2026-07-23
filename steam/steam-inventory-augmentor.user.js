@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.4
+// @version      3.26.5
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -565,12 +565,18 @@
 		btn.addEventListener('click', () => {
 			const inv = W.g_ActiveInventory;
 			const assets = (inv && (inv.rgInventory || inv.m_rgAssets)) || {};
+			let moved = 0;
 			for (const id of ids) {
 				const a = assets[id];
-				if (a && a.element) moveToTradeSafe(a.element);
+				if (a && a.element) {
+					moveToTradeSafe(a.element);
+					moved++;
+				}
 			}
 			afterTradeBatch();
-			btn.remove();
+			// clicked before the inventory finished loading: keep the draft
+			// (and the button) instead of silently losing it
+			if (moved) btn.remove();
 		});
 		bar.appendChild(btn);
 	}
@@ -810,7 +816,12 @@
 				if (res.status === 429) {
 					priceQueue.unshift(job); // rate limited: retry after a minute
 					priceBackoffUntil = Date.now() + 60000;
-					await sleep(60000);
+					// nothing mutates the page during the wait, so the countdown
+					// would freeze — tick a scan every few seconds to redraw it
+					for (let w = 0; w < 12; w++) {
+						await sleep(5000);
+						queueScan();
+					}
 					priceBackoffUntil = 0;
 					continue;
 				}
@@ -854,8 +865,12 @@
 			priceCurrentJob = null;
 			priceBackoffUntil = 0;
 		}
-		// prices changed the ordering data: keep an active price sort truthful
-		if (fetched) resortIfNeeded();
+		// prices changed the ordering data: drop the per-item value caches
+		// (they only re-key on valEpoch) and keep an active price sort truthful
+		if (fetched) {
+			valEpoch++;
+			resortIfNeeded();
+		}
 	}
 
 	function resortIfNeeded() {
@@ -1103,6 +1118,7 @@
 			h.style.display = '';
 		});
 		if (stashed) runLayout(); // restores the engine arrays + repaginates
+		else refilter(); // un-hidden holders must still respect an active filter
 	}
 
 	let scanQueued = false;
@@ -1345,7 +1361,9 @@
 		if (!inv._siaOrig || inv._siaOrig.length !== inv.m_rgItemElements.length) {
 			inv._siaOrig = inv.m_rgItemElements.slice();
 		}
-		clearStackBadges();
+		// badge clearing is global — in the multi-context loop the caller clears
+		// once up front, or each child would wipe the previous child's badges
+		if (!deferLayout) clearStackBadges();
 
 		let arr;
 		if (sortKey === 'default') {
@@ -1521,6 +1539,7 @@
 				const kids = Object.values(inv.m_rgChildInventories || {})
 					.filter((k) => k && Array.isArray(k.m_rgItemElements));
 				if (!kids.length) return;
+				clearStackBadges();
 				for (const k of kids) applyV2(k, sortKey, stack, true);
 				v2Relayout(inv);
 				return;
@@ -1717,8 +1736,8 @@
 			input.addEventListener('change', () => {
 				if (type === 'number') {
 					const n = Number(input.value);
-					// empty or garbage would save 0 (e.g. a zero cooldown) — keep the old value
-					if (input.value.trim() === '' || !Number.isFinite(n) || n < 0) {
+					// empty or garbage would save 0 (a zero cooldown hammers Steam) — keep the old value
+					if (input.value.trim() === '' || !Number.isFinite(n) || n <= 0) {
 						input.value = String(CONFIG[key] ?? '');
 						return;
 					}
@@ -2454,7 +2473,11 @@
 			if (idx > -1 && elItem.rgItem && W.g_ActiveInventory &&
 				belongsTo(W.g_ActiveInventory, elItem.rgItem)) {
 				const inv = W.g_ActiveInventory;
-				const counts = v2StackCounts.get(inv);
+				// stacking state lives on the child inventory in the multi-context
+				// "all" view — look it up on whichever inventory owns the item
+				const owner = inv.contextid == elItem.rgItem.contextid ? inv
+					: (inv.m_rgChildInventories || {})[elItem.rgItem.contextid] || inv;
+				const counts = v2StackCounts.get(owner);
 				if (counts) {
 					// stacked: dupes are collapsed into their representative, so
 					// "Duplicate" matches any stack that holds more than one copy
