@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.7
+// @version      3.26.8
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -2302,6 +2302,15 @@
 					}
 				} catch { /* previous inventory may be mid-teardown */ }
 			}
+		}
+
+		// a remembered sort choice must actually apply to whatever inventory
+		// loads or gets switched to — it used to apply only when the dropdown
+		// itself was changed, so "Price" looked selected but did nothing
+		const sortSel = document.getElementById('sia-sort');
+		if (sortSel && sortSel.value !== 'default' && inv && !inv._siaSorted) {
+			inv._siaSorted = 1;
+			runLayout();
 		}
 
 		// trade buttons follow the selected inventory tab: yours vs theirs
