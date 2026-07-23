@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.5
+// @version      2.6
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -33,6 +33,7 @@
     let   SCAN_LISTINGS = GM_getValue('sgai:scan', true);    // capsule badges on/off (toggle via menu)
     let   HIDE_AI       = GM_getValue('sgai:hide', false);   // hide AI-disclosed games entirely (toggle via menu)
     document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);
+    const APP_PAGE_ID = (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;  // viewing a game's own page
 
     /* ---------------- localized disclosure titles (data, MIT from seeeeew/aiwarningforsteam) ----- */
     const TITLES = ["AI Generated Content Disclosure","AI 生成内容披露","AI 生成內容聲明","AI生成コンテンツの開示",
@@ -220,6 +221,10 @@
     }
 
     function markAI(el, kind, id) {
+        // On a game's own app page nearly everything references that app (purchase area, queue
+        // widgets, media), so hide targets grow into whole page chunks and strip the page —
+        // including its screenshots. Hide only inside "More Like This" there; badges unaffected.
+        if (APP_PAGE_ID && !el.closest('#recommended_block')) return;
         const t = hideTarget(el, kind, id);
         if (t) t.classList.add('sgai_ai');
     }
@@ -339,10 +344,9 @@
     }
 
     /* ---------------- current app page: badge title + seed cache ---------------- */
-    const m = location.pathname.match(/^\/app\/(\d+)/);
-    if (m) {
+    if (APP_PAGE_ID) {
         const d = getDisclosure(document);
-        cacheSet(m[1], d);
+        cacheSet(APP_PAGE_ID, d);
         if (d.ai) titleBadge(d.text);
     }
 
