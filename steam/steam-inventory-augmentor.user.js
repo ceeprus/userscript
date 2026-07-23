@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.5
+// @version      3.26.6
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -543,11 +543,31 @@
 
 	function saveDraft() {
 		if (!CONFIG.draftSaver || !document.getElementById('trade_yours')) return;
+		// store app and context too — restoring must work even when a different
+		// game tab is active in the trade window
 		const ids = [...document.querySelectorAll('#your_slots .item')]
-			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)).filter(Boolean);
+			.map((e) => e.rgItem &&
+				`${e.rgItem.appid}_${e.rgItem.contextid}_${e.rgItem.id || e.rgItem.assetid}`)
+			.filter((s) => s && !s.includes('undefined'));
 		try {
 			if (ids.length) localStorage.setItem(tradePartnerKey(), JSON.stringify(ids));
 		} catch { /* quota */ }
+	}
+
+	// resolve a draft entry ("app_ctx_assetid", or a bare assetid from an old
+	// draft) to the item element, looking in the owning inventory
+	function draftElementOf(entry) {
+		const m = String(entry).match(/^(\d+)_(\d+)_(\d+)$/);
+		if (m) {
+			try {
+				const inv = W.UserYou?.getInventory?.(m[1], m[2]);
+				const a = inv && (inv.rgInventory || inv.m_rgAssets)?.[m[3]];
+				if (a && a.element) return a.element;
+			} catch { /* context not loaded yet */ }
+		}
+		const inv2 = W.g_ActiveInventory;
+		const a2 = inv2 && (inv2.rgInventory || inv2.m_rgAssets)?.[String(entry).split('_').pop()];
+		return (a2 && a2.element) || null;
 	}
 
 	function ensureDraftButton(bar) {
@@ -563,13 +583,11 @@
 		btn.textContent = `🕐${ids.length}`;
 		btn.title = `Restore draft: put your last ${ids.length} selected items back into the trade`;
 		btn.addEventListener('click', () => {
-			const inv = W.g_ActiveInventory;
-			const assets = (inv && (inv.rgInventory || inv.m_rgAssets)) || {};
 			let moved = 0;
 			for (const id of ids) {
-				const a = assets[id];
-				if (a && a.element) {
-					moveToTradeSafe(a.element);
+				const el = draftElementOf(id);
+				if (el) {
+					moveToTradeSafe(el);
 					moved++;
 				}
 			}
@@ -1075,6 +1093,7 @@
 		if (sig !== lastSlotSig) {
 			lastSlotSig = sig;
 			if (stackOn) runLayout();
+			fixSlotImages(); // also covers items dragged in without our helpers
 			updateTradeCompare();
 			saveDraft();
 		}
@@ -1869,7 +1888,9 @@
 
 	function emptyTradeSide(slotsId) {
 		document.querySelectorAll(`#${slotsId} .itemHolder .item`).forEach((el) => {
-			if (el.rgItem) {
+			// currency stacks have their own remove flow — RemoveItemFromTrade
+			// doesn't cover them and would desync the offer
+			if (el.rgItem && !el.rgItem.is_currency) {
 				try { W.GTradeStateManager?.RemoveItemFromTrade?.(el.rgItem); } catch { /* read-only */ }
 			}
 		});
@@ -1880,7 +1901,7 @@
 		let total = 0, money = 0, moneySample = '', unpriced = 0, items = 0;
 		for (const el of document.querySelectorAll(`#${slotsId} .itemHolder .item`)) {
 			const it = el.rgItem;
-			if (!it) continue;
+			if (!it || it.is_currency) continue; // currency stacks aren't items
 			items++;
 			const d = descOf(it) || {};
 			const v = refValueCached(d);
@@ -1950,6 +1971,11 @@
 
 	// repair slot images Steam leaves broken after rapid moves
 	function fixSlotImages() {
+		// a grouped representative carries its ×N badge along when moved into a
+		// slot — one offered item must not read "×5"
+		for (const b of document.querySelectorAll('#your_slots .sia-count, #their_slots .sia-count')) {
+			b.remove();
+		}
 		for (const slot of document.querySelectorAll('#your_slots .itemHolder, #their_slots .itemHolder')) {
 			const itemEl = slot.querySelector('.item');
 			if (!itemEl || !itemEl.rgItem) continue;
@@ -2021,14 +2047,23 @@
 			return span;
 		};
 
+		// build off-DOM and only write on change — a rebuild every tick flickers
+		// and feeds the mutation observer its own updates
+		const setContent = (el, tmp) => {
+			const h = tmp.innerHTML;
+			if (el.dataset.last !== h) {
+				el.dataset.last = h;
+				el.innerHTML = h;
+			}
+		};
 		const gm = sideMoney(give), tm = sideMoney(get);
 		const giveEl = sideSummaryEl('trade_yours', 'sia-give-summary');
 		const getEl = sideSummaryEl('trade_theirs', 'sia-get-summary');
 		if (giveEl) {
 			const empty = !give.total && !give.money && !give.unpriced;
 			giveEl.style.display = empty ? 'none' : '';
-			giveEl.innerHTML = '';
-			giveEl.appendChild(sidePart('You give', give, '#D75A4A')); // money out: red
+			const tmp = document.createElement('div');
+			tmp.appendChild(sidePart('You give', give, '#D75A4A')); // money out: red
 			const right = document.createElement('span');
 			let profitVal, profitBig, profitSmall;
 			if (gm || tm) {
@@ -2049,19 +2084,21 @@
 			big.style.color = profitVal > 0 ? '#9CC83B' : (profitVal < 0 ? '#D75A4A' : '#fff');
 			right.append(big, profitSmall);
 			right.style.color = profitVal > 0 ? '#9CC83B' : (profitVal < 0 ? '#D75A4A' : '#b8b6b4');
-			giveEl.appendChild(right);
+			tmp.appendChild(right);
+			setContent(giveEl, tmp);
 		}
 		if (getEl) {
 			const bpRef = partnerBackpackRef();
 			const empty = !get.total && !get.money && !get.unpriced && bpRef == null;
 			getEl.style.display = empty ? 'none' : '';
-			getEl.innerHTML = '';
-			if (get.items) getEl.appendChild(sidePart('You get', get, '#9CC83B')); // money in: green
+			const tmp = document.createElement('div');
+			if (get.items) tmp.appendChild(sidePart('You get', get, '#9CC83B')); // money in: green
 			if (bpRef != null) {
 				const bp = document.createElement('span');
 				bp.textContent = `Their backpack ≈ ${bpRef} ref`;
-				getEl.appendChild(bp);
+				tmp.appendChild(bp);
 			}
+			setContent(getEl, tmp);
 		}
 	}
 
@@ -2073,7 +2110,11 @@
 			.filter((p) => p.style.display !== 'none');
 		for (const p of pages) {
 			for (const el of p.querySelectorAll('.itemHolder .item')) {
-				if (el.rgItem && el.offsetParent !== null) moveToTradeSafe(el);
+				// stackable items (gem-style) open an amount dialog per move —
+				// a batch add would fire a dialog storm; leave them to manual adds
+				if (el.rgItem && !el.rgItem.is_stackable && el.offsetParent !== null) {
+					moveToTradeSafe(el);
+				}
 			}
 		}
 		afterTradeBatch();
@@ -2121,7 +2162,7 @@
 			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
 		const groups = new Map();
 		for (const a of assets) {
-			if (!a || !a.element || inTrade.has(a.id || a.assetid)) continue;
+			if (!a || !a.element || a.is_stackable || inTrade.has(a.id || a.assetid)) continue;
 			const d = descOf(a) || {};
 			if (METAL_REF[d.name]) continue; // metal is currency — use "Add metal" instead
 			const k = stackKeyOf(a);
