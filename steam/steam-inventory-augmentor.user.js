@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.0
+// @version      3.26.1
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1089,8 +1089,10 @@
 		if (!inv || inv._siaLoadReq || typeof inv.LoadCompleteInventory !== 'function') return;
 		if (typeof inv.BIsFullyLoaded === 'function' && inv.BIsFullyLoaded()) return;
 		inv._siaLoadReq = 1;
-		try { Promise.resolve(inv.LoadCompleteInventory()).then(queueScan, () => {}); }
-		catch { /* engine not ready; retried when the user interacts */ }
+		const done = () => { lastBarUpdate = 0; queueScan(); };
+		const retry = () => setTimeout(() => { inv._siaLoadReq = 0; queueScan(); }, 5000);
+		try { Promise.resolve(inv.LoadCompleteInventory()).then(done, retry); }
+		catch { retry(); }
 	}
 
 	function scan() {
