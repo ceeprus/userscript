@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.25.0
+// @version      3.26.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1063,7 +1063,8 @@
 		if (stackOn) return;
 		const leftovers = document.querySelector('.sia-count, .sia-stacked-holder');
 		const inv = W.g_ActiveInventory;
-		const stashed = inv && v2Stashes.has(inv);
+		const stashed = inv && (v2Stashes.has(inv) ||
+			Object.values(inv.m_rgChildInventories || {}).some((k) => v2Stashes.has(k)));
 		if (!leftovers && !stashed) return;
 		clearStackBadges();
 		document.querySelectorAll('.sia-stacked-holder').forEach((h) => {
@@ -1078,10 +1079,25 @@
 	}
 
 	let scanQueued = false;
+	// totals need every asset, but Steam only loads inventory pages on demand;
+	// request the rest once per inventory (opening the advanced filters used
+	// to be the accidental way to trigger this load)
+	function ensureFullLoad() {
+		if (!CONFIG.priceIndicator && !CONFIG.metalCounter) return;
+		if (!document.getElementById('tabcontent_inventory')) return; // inventory pages only
+		const inv = W.g_ActiveInventory;
+		if (!inv || inv._siaLoadReq || typeof inv.LoadCompleteInventory !== 'function') return;
+		if (typeof inv.BIsFullyLoaded === 'function' && inv.BIsFullyLoaded()) return;
+		inv._siaLoadReq = 1;
+		try { Promise.resolve(inv.LoadCompleteInventory()).then(queueScan, () => {}); }
+		catch { /* engine not ready; retried when the user interacts */ }
+	}
+
 	function scan() {
 		scanQueued = false;
 		document.querySelectorAll('.item:not([data-sia])').forEach(augment);
 		healStackState();
+		ensureFullLoad();
 		if (priceQueue.length && !pricePumpRunning) pumpPrices(); // self-restart
 		ensureKeyPrice();
 		injectPanelLinks();
@@ -1246,7 +1262,28 @@
 		v2StackCounts.delete(inv);
 	}
 
-	function applyV2(inv, sortKey, stack) {
+	// repaginate + reload images for the current page; shared by plain and
+	// multi-context ("all" view) inventories
+	function v2Relayout(inv) {
+		const per = W.INVENTORY_PAGE_ITEMS || 25;
+		const total = (Array.isArray(inv.m_rgItemElements) && inv.m_rgItemElements.length) ||
+			(typeof inv.GetCountTotalItems === 'function' ? inv.GetCountTotalItems() : 0);
+		const cPages = Math.max(1, Math.ceil(total / per));
+		if (inv.m_iCurrentPage >= cPages) inv.m_iCurrentPage = 0;
+		inv.m_bNeedsRepagination = true;
+		inv.LayoutPages();
+		inv.ShowPageControlsIfNeeded?.();
+		// reordered-in items may never have had images loaded; the responsive
+		// single page is reused across layouts and keeps its images-loaded flag
+		const pg = inv.m_rgPages && inv.m_rgPages[inv.m_iCurrentPage];
+		if (pg) {
+			pg.m_bImagesLoaded = false;
+			try { pg.LoadPageImages?.(); } catch { /* not built yet */ }
+		}
+		refilter();
+	}
+
+	function applyV2(inv, sortKey, stack, deferLayout) {
 		restoreV2Stack(inv);
 		// re-capture if the inventory grew since we first saw it (late loads)
 		if (!inv._siaOrig || inv._siaOrig.length !== inv.m_rgItemElements.length) {
@@ -1296,20 +1333,7 @@
 			inv.m_rgItemElements = arr;
 		}
 
-		const per = W.INVENTORY_PAGE_ITEMS || 25;
-		const cPages = Math.max(1, Math.ceil(inv.m_rgItemElements.length / per));
-		if (inv.m_iCurrentPage >= cPages) inv.m_iCurrentPage = 0;
-		inv.m_bNeedsRepagination = true;
-		inv.LayoutPages();
-		inv.ShowPageControlsIfNeeded?.();
-		// reordered-in items may never have had images loaded; the responsive
-		// single page is reused across layouts and keeps its images-loaded flag
-		const pg = inv.m_rgPages && inv.m_rgPages[inv.m_iCurrentPage];
-		if (pg) {
-			pg.m_bImagesLoaded = false;
-			try { pg.LoadPageImages?.(); } catch { /* not built yet */ }
-		}
-		refilter();
+		if (!deferLayout) v2Relayout(inv);
 	}
 
 	// --- legacy engine (economy.js, trade offer pages): DOM pages in pageList ---
@@ -1435,7 +1459,16 @@
 
 	function applyFor(inv, sortKey, stack) {
 		if (inv && Array.isArray(inv.m_rgItemElements) && typeof inv.LayoutPages === 'function') {
-			if (inv.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) return; // "all games" view
+			if (inv.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) {
+				// multi-context "all" view: its own element list stays empty — sort
+				// and stack each child context, then let the parent repaginate
+				const kids = Object.values(inv.m_rgChildInventories || {})
+					.filter((k) => k && Array.isArray(k.m_rgItemElements));
+				if (!kids.length) return;
+				for (const k of kids) applyV2(k, sortKey, stack, true);
+				v2Relayout(inv);
+				return;
+			}
 			applyV2(inv, sortKey, stack);
 		} else if (inv && Array.isArray(inv.pageList)) {
 			applyLegacy(inv, sortKey, stack);
@@ -1460,13 +1493,30 @@
 	wrapMatchItem();
 
 	// descriptions of everything in the active inventory: engine assets when
-	// loaded, rendered item elements otherwise (some tabs never fill assets)
+	// loaded, child-context assets for the multi-context "all" view (its own
+	// asset map stays empty), rendered item elements as the last resort
 	function activeDescs() {
 		const inv = W.g_ActiveInventory;
-		const assets = inv && (inv.m_rgAssets || inv.rgInventory);
-		if (assets && Object.keys(assets).length) return Object.values(assets).map(descOf);
-		const invEl = getActiveInvEl();
-		return invEl ? itemsOf(invEl).map((el) => descOf(el.rgItem)) : [];
+		const out = [];
+		const takeFrom = (i) => {
+			const assets = i && (i.m_rgAssets || i.rgInventory);
+			if (assets) for (const a of Object.values(assets)) {
+				const d = descOf(a);
+				if (d) out.push(d);
+			}
+		};
+		takeFrom(inv);
+		if (!out.length && inv?.m_rgChildInventories) {
+			for (const child of Object.values(inv.m_rgChildInventories)) takeFrom(child);
+		}
+		if (!out.length) {
+			const invEl = getActiveInvEl();
+			if (invEl) for (const el of itemsOf(invEl)) {
+				const d = descOf(el.rgItem);
+				if (d) out.push(d);
+			}
+		}
+		return out;
 	}
 
 	function metalCounts() {
