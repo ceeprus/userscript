@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.8
+// @version      3.27.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -217,6 +217,21 @@
 	// Inventory page assets look like {assetid, classid, description: {...}};
 	// trade offer page items are old-style with descriptions/tags at top level.
 	const descOf = (item) => (item && (item.description || item)) || null;
+
+	// Steam's pages replace Object.values with a for..in shim while also
+	// polluting Array.prototype with ~35 enumerable methods — calling it on an
+	// engine asset ARRAY returns library functions as "assets". Own props only.
+	function assetList(assets) {
+		const out = [];
+		if (!assets) return out;
+		for (const k in assets) {
+			if (Object.prototype.hasOwnProperty.call(assets, k) && k !== 'length') {
+				const v = assets[k];
+				if (v && typeof v === 'object') out.push(v);
+			}
+		}
+		return out;
+	}
 
 	// market-priceable: marketable now, or merely on a temporary trade/market hold
 	// (held CS2 items still have real market prices for their type)
@@ -1075,7 +1090,7 @@
 	// all copies (same stack key) of an item in the active inventory, not yet in trade
 	function copiesOf(item) {
 		const inv = W.g_ActiveInventory;
-		const assets = Object.values((inv && (inv.m_rgAssets || inv.rgInventory)) || {});
+		const assets = assetList(inv && (inv.m_rgAssets || inv.rgInventory));
 		const key = stackKeyOf(item);
 		const inTrade = new Set([...document.querySelectorAll('#your_slots .item, #their_slots .item')]
 			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
@@ -1125,7 +1140,7 @@
 		const leftovers = document.querySelector('.sia-count, .sia-stacked-holder');
 		const inv = W.g_ActiveInventory;
 		const stashed = inv && (v2Stashes.has(inv) ||
-			Object.values(inv.m_rgChildInventories || {}).some((k) => v2Stashes.has(k)));
+			assetList(inv.m_rgChildInventories).some((k) => v2Stashes.has(k)));
 		if (!leftovers && !stashed) return;
 		clearStackBadges();
 		document.querySelectorAll('.sia-stacked-holder').forEach((h) => {
@@ -1591,15 +1606,14 @@
 		const inv = W.g_ActiveInventory;
 		const out = [];
 		const takeFrom = (i) => {
-			const assets = i && (i.m_rgAssets || i.rgInventory);
-			if (assets) for (const a of Object.values(assets)) {
+			for (const a of assetList(i && (i.m_rgAssets || i.rgInventory))) {
 				const d = descOf(a);
 				if (d) out.push(d);
 			}
 		};
 		takeFrom(inv);
 		if (!out.length && inv?.m_rgChildInventories) {
-			for (const child of Object.values(inv.m_rgChildInventories)) takeFrom(child);
+			for (const child of assetList(inv.m_rgChildInventories)) takeFrom(child);
 		}
 		if (!out.length) {
 			const invEl = getActiveInvEl();
@@ -1860,7 +1874,7 @@
 		}
 		input.style.borderColor = '';
 		const inv = W.g_ActiveInventory;
-		const assets = Object.values((inv && (inv.rgInventory || inv.m_rgAssets)) || {});
+		const assets = assetList(inv && (inv.rgInventory || inv.m_rgAssets));
 		const inTrade = new Set([...document.querySelectorAll('#your_slots .item')]
 			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
 		const pool = { 'Refined Metal': [], 'Reclaimed Metal': [], 'Scrap Metal': [] };
@@ -1926,7 +1940,7 @@
 			return partnerValues.get(W.UserThem) ?? null;
 		}
 		if (partnerValues.has(W.UserThem)) return partnerValues.get(W.UserThem);
-		const assets = Object.values((inv.rgInventory || inv.m_rgAssets) || {});
+		const assets = assetList(inv.rgInventory || inv.m_rgAssets);
 		if (!assets.length) return null;
 		let total = 0;
 		for (const a of assets) {
@@ -2155,7 +2169,7 @@
 		const inv = W.g_ActiveInventory;
 		if (!inv) return;
 		await loadUntradableKeys();
-		const assets = Object.values((inv.rgInventory || inv.m_rgAssets) || {});
+		const assets = assetList(inv.rgInventory || inv.m_rgAssets);
 		const inTrade = new Set([...document.querySelectorAll('#your_slots .item, #their_slots .item')]
 			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
 		const groups = new Map();
@@ -2179,7 +2193,7 @@
 	function giveAllRobotParts() {
 		const inv = W.g_ActiveInventory;
 		if (!inv) return;
-		const assets = Object.values((inv.rgInventory || inv.m_rgAssets) || {});
+		const assets = assetList(inv.rgInventory || inv.m_rgAssets);
 		const inTrade = new Set([...document.querySelectorAll('#your_slots .item, #their_slots .item')]
 			.map((e) => e.rgItem && (e.rgItem.id || e.rgItem.assetid)));
 		for (const a of assets) {
@@ -2489,7 +2503,7 @@
 
 		const dupeCount = (inv) => {
 			tagDupes(inv);
-			return Object.values(inv.m_rgAssets || {}).filter((a) => a._siaDupe).length;
+			return assetList(inv.m_rgAssets).filter((a) => a._siaDupe).length;
 		};
 
 		const origReadTags = W.CInventory.prototype.ReadTags;
@@ -2505,7 +2519,7 @@
 			// count trade-locked items into "Tradable" to match the filter behavior
 			const tradableTag = this.tags.misc.tags.tradable;
 			if (tradableTag) {
-				const locked = Object.values(this.m_rgAssets || {})
+				const locked = assetList(this.m_rgAssets)
 					.filter((a) => a && a.description && lockDaysCached(a.description) > 0).length;
 				tradableTag.count += locked;
 			}
@@ -2602,7 +2616,7 @@
 				if (!d || !d.marketable || !d.market_hash_name || !d.commodity) return;
 
 				const assets = W.g_ActiveInventory?.m_rgAssets || {};
-				const count = Object.values(assets).filter((a) => {
+				const count = assetList(assets).filter((a) => {
 					const ad = descOf(a);
 					return ad && ad.marketable && ad.market_hash_name === d.market_hash_name;
 				}).length;
