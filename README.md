@@ -16,6 +16,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | [Steam Curator: Import Review Link from Backloggd](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js) | Adds a searchable "Import from Backloggd" box next to the "URL for full review" field on Steam Curator review-edit pages. |
 | [Steam Guide: Live Side Preview](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/guide-preview.user.js) | Docks a live rendered preview beside the Steam guide-section editor that updates as you type, reusing Steam's own BBCode styling. |
 | [Backloggd: Copy Review Link](https://raw.githubusercontent.com/ceeprus/userscript/main/backloggd/copy-reviews.user.js) | Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards. |
+| [Scrap.TF: Hide Entered Raffles](https://raw.githubusercontent.com/ceeprus/userscript/main/scraptf/scraptf-hide-entered.user.js) | Hides already-entered raffles on Scrap.TF raffle lists, with an eye toggle button next to Create Raffle. |
 | [FFXIV Language Redirect](https://raw.githubusercontent.com/ceeprus/userscript/main/ffxiv/ffxiv-redirect.user.js) | Redirects any regional FFXIV site (DE/FR/EU/JP, etc.) to the NA version. |
 | [GitHub Commit Email Revealer](https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js) | Shows all commit author emails in a popup next to "Browse Files", with a live status indicator. |
 
