@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.2
+// @version      3.26.3
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -286,10 +286,12 @@
 	function augment(el) {
 		const item = el.rgItem;
 		if (!item) return; // element not wired up by Steam yet; retry on next scan
-		el.dataset.sia = '1';
 
+		// assets can be wired before their description arrives; don't mark the
+		// element done on that placeholder or it would never get badges
 		const d = descOf(item);
-		if (!d) return;
+		if (!d || !(d.name || d.market_hash_name || d.descriptions)) return;
+		el.dataset.sia = '1';
 
 		// trade-locked = temporary; show countdown instead of the red untradable bar
 		const lockDays = CONFIG.tradeLockBadge ? lockDaysCached(d) : 0;
@@ -580,11 +582,11 @@
 		if (!CONFIG.updateURL) return;
 		const last = +localStorage.getItem('siaUpdateChecked') || 0;
 		if (Date.now() - last < 86400e3) return;
-		localStorage.setItem('siaUpdateChecked', String(Date.now()));
 		const txt = await gmFetchText(CONFIG.updateURL);
 		const remote = txt?.match(/@version\s+([\d.]+)/)?.[1];
 		const local = (typeof GM_info !== 'undefined' && GM_info.script?.version) || '0';
-		if (!remote) return;
+		if (!remote) return; // fetch failed — leave the stamp so next load retries
+		localStorage.setItem('siaUpdateChecked', String(Date.now()));
 		const cmp = (a, b) => {
 			const A = a.split('.').map(Number), B = b.split('.').map(Number);
 			for (let i = 0; i < 3; i++) {
@@ -1688,8 +1690,17 @@
 				row.append(eye, check, status);
 			}
 			input.addEventListener('change', () => {
-				saved[key] = type === 'number' ? Number(input.value)
-					: type === 'text' ? input.value.trim() : input.checked;
+				if (type === 'number') {
+					const n = Number(input.value);
+					// empty or garbage would save 0 (e.g. a zero cooldown) — keep the old value
+					if (input.value.trim() === '' || !Number.isFinite(n) || n < 0) {
+						input.value = String(CONFIG[key] ?? '');
+						return;
+					}
+					saved[key] = n;
+				} else {
+					saved[key] = type === 'text' ? input.value.trim() : input.checked;
+				}
 				try { localStorage.setItem('siaSettings', JSON.stringify(saved)); } catch { /* quota */ }
 				document.getElementById('sia-settings-note').style.display = '';
 			});
@@ -1860,7 +1871,11 @@
 			if (v > 0) total += v;
 		}
 		total = Math.round(total);
-		partnerValues.set(W.UserThem, total);
+		// only freeze the number once their inventory is fully loaded — caching a
+		// half-loaded backpack would understate them for the whole trade
+		if (typeof inv.BIsFullyLoaded !== 'function' || inv.BIsFullyLoaded()) {
+			partnerValues.set(W.UserThem, total);
+		}
 		return total;
 	}
 
@@ -2353,10 +2368,12 @@
 		const belongsTo = (inv, item) =>
 			item.appid == inv.appid && (inv.contextid == 0 || item.contextid == inv.contextid);
 
-		const fromInventory = (inv, item) =>
-			inv.contextid == item.contextid
-				? inv.m_rgAssets[item.assetid]
-				: fromInventory(inv.m_rgChildInventories[item.contextid], item);
+		const fromInventory = (inv, item) => {
+			if (!inv) return null; // unknown context — never break Steam's filter
+			return inv.contextid == item.contextid
+				? (inv.m_rgAssets || {})[item.assetid]
+				: fromInventory((inv.m_rgChildInventories || {})[item.contextid], item);
+		};
 
 		function tagDupes(inv, classids = {}) {
 			if (inv._siaDupesTagged) return;
@@ -2409,7 +2426,8 @@
 				if (d && lockDaysCached(d) > 0) matched = true;
 			}
 
-			if (idx > -1 && belongsTo(W.g_ActiveInventory, elItem.rgItem)) {
+			if (idx > -1 && elItem.rgItem && W.g_ActiveInventory &&
+				belongsTo(W.g_ActiveInventory, elItem.rgItem)) {
 				const inv = W.g_ActiveInventory;
 				const counts = v2StackCounts.get(inv);
 				if (counts) {
@@ -2418,7 +2436,7 @@
 					matched = matched && (counts.get(stackKeyOf(elItem.rgItem)) || 0) > 1;
 				} else {
 					tagDupes(inv);
-					matched = matched && !!fromInventory(inv, elItem.rgItem)._siaDupe;
+					matched = matched && !!fromInventory(inv, elItem.rgItem)?._siaDupe;
 				}
 			}
 			return matched;
