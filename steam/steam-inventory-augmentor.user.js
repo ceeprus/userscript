@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.6
+// @version      3.26.7
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1553,14 +1553,12 @@
 	function applyFor(inv, sortKey, stack) {
 		if (inv && Array.isArray(inv.m_rgItemElements) && typeof inv.LayoutPages === 'function') {
 			if (inv.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) {
-				// multi-context "all" view: its own element list stays empty — sort
-				// and stack each child context, then let the parent repaginate
-				const kids = Object.values(inv.m_rgChildInventories || {})
-					.filter((k) => k && Array.isArray(k.m_rgItemElements));
-				if (!kids.length) return;
-				clearStackBadges();
-				for (const k of kids) applyV2(k, sortKey, stack, true);
-				v2Relayout(inv);
+				// multi-context "all" view: NEVER touch its engine arrays — its
+				// pages are rebuilt from child element lists under strict
+				// index/count invariants, and reordering them orphans the real
+				// item elements (blank inventory). Reorder the rendered DOM only.
+				const invEl = getActiveInvEl();
+				if (invEl) applyDom(invEl, sortKey, stack);
 				return;
 			}
 			applyV2(inv, sortKey, stack);
@@ -2287,15 +2285,22 @@
 		const invEl = getActiveInvEl();
 		if (inv !== lastInv || invEl !== lastInvEl) {
 			const prev = lastInv;
+			const prevEl = lastInvEl;
 			lastInv = inv;
 			lastInvEl = invEl;
 			if (stackOn) {
 				stackOn = false;
 				document.getElementById('sia-stack')?.classList.remove('sia-stack-on');
-				if (prev) {
-					try { applyFor(prev, document.getElementById('sia-sort')?.value || 'default', false); }
-					catch { /* previous inventory may be mid-teardown */ }
-				}
+				const key = document.getElementById('sia-sort')?.value || 'default';
+				try {
+					// the multi-context view is grouped DOM-only, in its own
+					// container — restore that, not the newly visible one
+					if (prev && prev.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) {
+						if (prevEl) applyDom(prevEl, key, false);
+					} else if (prev) {
+						applyFor(prev, key, false);
+					}
+				} catch { /* previous inventory may be mid-teardown */ }
 			}
 		}
 
