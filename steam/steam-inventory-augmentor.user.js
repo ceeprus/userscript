@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.3
+// @version      3.26.4
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -596,8 +596,16 @@
 			return 0;
 		};
 		if (cmp(remote, local) <= 0) return;
-		const bar = document.getElementById('sia-bar');
-		if (bar && !document.getElementById('sia-update')) {
+		// the toolbar is usually still being built when the fetch returns —
+		// retry the banner for a while instead of dropping it
+		let tries = 30;
+		const attach = () => {
+			const bar = document.getElementById('sia-bar');
+			if (!bar) {
+				if (tries-- > 0) setTimeout(attach, 1000);
+				return;
+			}
+			if (document.getElementById('sia-update')) return;
 			const a = document.createElement('a');
 			a.id = 'sia-update';
 			a.href = CONFIG.updateURL;
@@ -605,7 +613,8 @@
 			a.textContent = `Update ${remote} available`;
 			a.style.color = '#FFD700';
 			bar.appendChild(a);
-		}
+		};
+		attach();
 	}
 
 	// ------------------------------------------------------------------
@@ -617,6 +626,18 @@
 	const savePriceCache = () => {
 		try { localStorage.setItem(PRICE_LS_KEY, JSON.stringify(priceCache)); } catch { /* full */ }
 	};
+	// prune fossils on load so the cache doesn't grow without bound
+	{
+		const cutoff = Date.now() - 7 * 86400e3;
+		let dropped = 0;
+		for (const k of Object.keys(priceCache)) {
+			if (!priceCache[k] || !(priceCache[k].t > cutoff)) {
+				delete priceCache[k];
+				dropped++;
+			}
+		}
+		if (dropped) savePriceCache();
+	}
 
 	const priceQueue = [];
 	const priceQueued = new Set();
@@ -819,7 +840,11 @@
 					document.querySelectorAll(`[data-sia-pk="${CSS.escape(job.key)}"]`)
 						.forEach((el) => renderPrice(el, rec));
 				}
-			} catch { /* network hiccup — item gets rediscovered next scan */ }
+			} catch {
+				// network hiccup: release the key or the item could never
+				// re-enter the queue for the rest of the session
+				priceQueued.delete(job.key);
+			}
 			await sleep(CONFIG.priceCooldownMs);
 		}
 		} finally {
