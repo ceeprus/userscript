@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.26.1
+// @version      3.26.2
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1079,6 +1079,22 @@
 	}
 
 	let scanQueued = false;
+	// price every sellable asset, not just the ones with rendered elements —
+	// off-page items may never touch the DOM on the responsive engine
+	function queueMissingPrices() {
+		if (!CONFIG.priceIndicator) return;
+		let added = 0;
+		for (const d of activeDescs()) {
+			if (!priceable(d)) continue;
+			const key = `${d.appid}||${d.market_hash_name}`;
+			if (priceQueued.has(key) || priceFresh(priceCache[key])) continue;
+			priceQueued.add(key);
+			priceQueue.push({ key, appid: d.appid, mhn: d.market_hash_name });
+			added++;
+		}
+		if (added) pumpPrices();
+	}
+
 	// totals need every asset, but Steam only loads inventory pages on demand;
 	// request the rest once per inventory (opening the advanced filters used
 	// to be the accidental way to trigger this load)
@@ -1086,10 +1102,21 @@
 		if (!CONFIG.priceIndicator && !CONFIG.metalCounter) return;
 		if (!document.getElementById('tabcontent_inventory')) return; // inventory pages only
 		const inv = W.g_ActiveInventory;
-		if (!inv || inv._siaLoadReq || typeof inv.LoadCompleteInventory !== 'function') return;
-		if (typeof inv.BIsFullyLoaded === 'function' && inv.BIsFullyLoaded()) return;
+		if (!inv || typeof inv.LoadCompleteInventory !== 'function') return;
+		const done = () => {
+			if (!inv._siaQueuedAll) {
+				inv._siaQueuedAll = 1;
+				queueMissingPrices();
+			}
+			lastBarUpdate = 0;
+			queueScan();
+		};
+		if (typeof inv.BIsFullyLoaded === 'function' && inv.BIsFullyLoaded()) {
+			if (!inv._siaQueuedAll) done();
+			return;
+		}
+		if (inv._siaLoadReq) return;
 		inv._siaLoadReq = 1;
-		const done = () => { lastBarUpdate = 0; queueScan(); };
 		const retry = () => setTimeout(() => { inv._siaLoadReq = 0; queueScan(); }, 5000);
 		try { Promise.resolve(inv.LoadCompleteInventory()).then(done, retry); }
 		catch { retry(); }
@@ -2256,10 +2283,10 @@
 			const descs = activeDescs();
 			let sum = 0, priced = 0, marketable = 0, sample = '';
 			for (const d of descs) {
+				// marketable (or on a temporary hold) = sellable = has value;
+				// tradability doesn't matter here — market-protected items
+				// (CS2) are untradable yet still sellable
 				if (!priceable(d)) continue;
-				// permanently untradable can't be sold or traded — don't count it
-				// (temporary trade/market holds still count)
-				if ((d.tradable === 0 || d.tradable === false) && lockDaysCached(d) <= 0) continue;
 				marketable++;
 				const rec = priceCache[`${d.appid}||${d.market_hash_name}`];
 				const n = rec ? parsePrice(rec.lp || rec.mp) : NaN;
