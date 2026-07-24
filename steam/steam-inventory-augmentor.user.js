@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.0
+// @version      3.28.1
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -615,17 +615,12 @@
 	}
 
 	// ------------------------------------------------------------------
-	// Update checker — daily, only when updateURL is set
+	// Update checker — runs every page load (fetch throttled to 10 min);
+	// the last known remote version shows a banner instantly
 	// ------------------------------------------------------------------
 	async function checkForUpdate() {
 		if (!CONFIG.updateURL) return;
-		const last = +localStorage.getItem('siaUpdateChecked') || 0;
-		if (Date.now() - last < 86400e3) return;
-		const txt = await gmFetchText(CONFIG.updateURL);
-		const remote = txt?.match(/@version\s+([\d.]+)/)?.[1];
 		const local = (typeof GM_info !== 'undefined' && GM_info.script?.version) || '0';
-		if (!remote) return; // fetch failed — leave the stamp so next load retries
-		localStorage.setItem('siaUpdateChecked', String(Date.now()));
 		const cmp = (a, b) => {
 			const A = a.split('.').map(Number), B = b.split('.').map(Number);
 			for (let i = 0; i < 3; i++) {
@@ -634,26 +629,41 @@
 			}
 			return 0;
 		};
-		if (cmp(remote, local) <= 0) return;
-		// the toolbar is usually still being built when the fetch returns —
-		// retry the banner for a while instead of dropping it
-		let tries = 30;
-		const attach = () => {
-			const bar = document.getElementById('sia-bar');
-			if (!bar) {
-				if (tries-- > 0) setTimeout(attach, 1000);
-				return;
-			}
-			if (document.getElementById('sia-update')) return;
-			const a = document.createElement('a');
-			a.id = 'sia-update';
-			a.href = CONFIG.updateURL;
-			a.target = '_blank';
-			a.textContent = `Update ${remote} available`;
-			a.style.color = '#FFD700';
-			bar.appendChild(a);
+		const showBanner = (remote) => {
+			// the toolbar is usually still being built when this runs —
+			// retry attaching for a while instead of dropping the banner
+			let tries = 30;
+			const attach = () => {
+				const bar = document.getElementById('sia-bar');
+				if (!bar) {
+					if (tries-- > 0) setTimeout(attach, 1000);
+					return;
+				}
+				let a = document.getElementById('sia-update');
+				if (!a) {
+					a = document.createElement('a');
+					a.id = 'sia-update';
+					a.href = CONFIG.updateURL;
+					a.target = '_blank';
+					a.title = 'Opens the install dialog with the new version';
+					a.style.color = '#FFD700';
+					bar.appendChild(a);
+				}
+				a.textContent = `Update ${remote} available`;
+			};
+			attach();
 		};
-		attach();
+		// version seen on a previous check: banner without waiting for the fetch
+		const known = localStorage.getItem('siaRemoteVer');
+		if (known && cmp(known, local) > 0) showBanner(known);
+		const last = +localStorage.getItem('siaUpdateChecked') || 0;
+		if (Date.now() - last < 600e3) return; // fresh enough — skip the fetch
+		const txt = await gmFetchText(CONFIG.updateURL);
+		const remote = txt?.match(/@version\s+([\d.]+)/)?.[1];
+		if (!remote) return; // fetch failed — no stamp, next load retries
+		localStorage.setItem('siaUpdateChecked', String(Date.now()));
+		localStorage.setItem('siaRemoteVer', remote);
+		if (cmp(remote, local) > 0) showBanner(remote);
 	}
 
 	// ------------------------------------------------------------------
