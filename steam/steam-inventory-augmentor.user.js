@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.27.0
+// @version      3.28.0
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -1267,11 +1267,17 @@
 	const itemsOf = (invEl) => [...invEl.querySelectorAll('.inventory_page .itemHolder > .item')]
 		.filter((el) => el.rgItem);
 
+	// asset ids are numeric strings too large to trust as floats — compare by
+	// length first, then lexicographically
+	const idCmp = (x, y) => (x.length - y.length) || (x < y ? -1 : x > y ? 1 : 0);
+
 	const SORTS = {
 		name: (a, b) => a.name.localeCompare(b.name),
 		type: (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name),
 		quality: (a, b) => a.quality - b.quality || a.name.localeCompare(b.name),
 		price: (a, b) => b.price - a.price || a.name.localeCompare(b.name),
+		// newer items get higher asset ids
+		newest: (a, b) => idCmp(b.aid, a.aid) || a.name.localeCompare(b.name),
 	};
 
 	// sortable value in refined: metal at face value, bp.tf value for TF2 items,
@@ -1324,6 +1330,7 @@
 			type: tagName(tagOf(d, 'Type')) || String(d.type || ''),
 			quality: qIdx === -1 ? 99 : qIdx,
 			price: refValueCached(d),
+			aid: String(el.rgItem.id || el.rgItem.assetid || 0),
 		};
 	}
 
@@ -1812,6 +1819,7 @@
 						<option value="type">Type</option>
 						<option value="quality">Quality</option>
 						<option value="price" title="Highest value first">Price</option>
+						<option value="newest" title="Newest items first">Newest</option>
 					</select></label>`
 				: '') +
 			(CONFIG.stacking ? '<button id="sia-stack" type="button" title="Group duplicate items into one box">Group</button>' : '') +
