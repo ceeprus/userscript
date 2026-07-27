@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.14
+// @version      1.15
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -205,6 +205,25 @@
     return normName(String(s || '').split(/\s+\(|\s+\[/)[0]);
   }
 
+  // CurseForge and Modrinth title the same mod differently: "Architectury"
+  // vs "Architectury API", "Iris" vs "Iris Shaders", "CosmeticArmorReworked"
+  // vs "Cosmetic Armor Reworked". The canonical key drops filler words and
+  // whitespace so those all land on one key. Loader names and bare integers
+  // stay significant - "Sodium Fabric"/"Sodium Forge" and "Mod 1"/"Mod 3"
+  // are genuinely different projects.
+  function canonKey(s) {
+    var toks = baseName(s).split(/[^a-z0-9+]+/);
+    var out = [];
+    for (var i = 0; i < toks.length; i++) {
+      var t = toks[i];
+      if (!t) continue;
+      if (/^(api|mod|mods|library|lib|shaders?|edition|remastered|reforged|legacy|updated|minecraft|mc)$/.test(t)) continue;
+      if (/^v?\d+(\.\d+)+$/.test(t) || /^v\d+$/.test(t)) continue; // version strings, not bare integers
+      out.push(t);
+    }
+    return out.join('');
+  }
+
   // Launchers and CurseForge suffix names differently than Modrinth
   // ("GeckoLib 4" vs "Geckolib"). Both sides also compare with trailing
   // edition markers and version numbers stripped.
@@ -228,7 +247,7 @@
   //   Accelerated Decay (https://modrinth.com/mod/laX5CckD) by ErrorMikey
   //   AdvancedLootInfo (https://modrinth.com/mod/PEPVViac) [1.12.0] by Yanny (file.jar)
   function parseModlist(text) {
-    var names = {}, ids = {}, cf = {}, stripped = {}, lines = 0;
+    var names = {}, ids = {}, cf = {}, stripped = {}, canon = {}, lines = 0;
     String(text || '').split(/\r?\n/).forEach(function (line) {
       var l = line.trim();
       if (!l) return;
@@ -255,8 +274,10 @@
       // card whose name needed no stripping, or "Mod 1" would equal "Mod 3"
       var st = strippedName(l);
       if (st && st !== name) stripped[st] = 1;
+      var ck = canonKey(l);
+      if (ck) canon[ck] = 1;
     });
-    return { names: names, ids: ids, cf: cf, stripped: stripped, lines: lines };
+    return { names: names, ids: ids, cf: cf, stripped: stripped, canon: canon, lines: lines };
   }
 
   function loadModlist() {
@@ -370,6 +391,9 @@
       var st = strippedName(card.title);
       if (st !== base && ml.names[st]) return true; // card suffixed, line plain
       if (st === base && (ml.stripped || {})[base]) return true; // line suffixed, card plain
+      // canonical tier: filler words and spacing differences on either side
+      var ck = canonKey(card.title);
+      if (ck && (ml.canon || {})[ck]) return true;
     }
     return false;
   }
@@ -2132,7 +2156,7 @@
   var state = {
     list: null, bar: null, prefs: null, kind: null, ranks: null, run: 0,
     hidden: loadHidden(), reveal: load(REVEAL_KEY, false) === true, block: loadBlock(),
-    modlist: { names: {}, ids: {}, cf: {}, stripped: {}, lines: 0, raw: '' },
+    modlist: { names: {}, ids: {}, cf: {}, stripped: {}, canon: {}, lines: 0, raw: '' },
     mlMode: (function (m) { return m === 'only' || m === 'badge' ? m : 'exclude'; })(load(MODLIST_MODE_KEY, 'exclude')),
     stars: loadStars(),
     dlMinC: (function (r) {
