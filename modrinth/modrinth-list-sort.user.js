@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.15
+// @version      1.16
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -232,6 +232,9 @@
     var prev = '';
     while (n !== prev) {
       prev = n;
+      // dash-tagline tails: "LambDynamicLights - Dynamic Lights". Spaced
+      // separators only, so hyphenated names stay whole.
+      n = n.replace(/\s+[-–—|]\s.*$/, '').trim();
       // decorative emoji ("Jade 🔍") - pictographs only, never ASCII symbols,
       // so "EMI++" can never collapse into "EMI"
       try { n = n.replace(/(?:\s|️|\p{Extended_Pictographic})+$/gu, '').trim(); } catch (e) { /* old engine */ }
