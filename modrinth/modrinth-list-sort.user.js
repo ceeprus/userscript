@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.1
+// @version      1.13
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -26,11 +26,16 @@
   var BLOCK_KEY = 'mrsort-blocklist';
   var MODLIST_KEY = 'mrsort-modlist';
   var MODLIST_MODE_KEY = 'mrsort-modlist-mode'; // exclude | only | badge
-  var MCVER_KEY = 'mrsort-mcver';
-  var LOADER_KEY = 'mrsort-loader';
   var DEPS_KEY = 'mrsort-deps';
-
-  var LOADERS = ['fabric', 'forge', 'neoforge', 'quilt'];
+  var DESC_HOVER_MS = 350; // compact mode: how long to hover before a description expands
+  var STAR_KEY = 'mrsort-starred';
+  var RANGE_KEY = 'mrsort-dlrange';
+  var COMPACT_KEY = 'mrsort-compact';
+  var CFMAP_KEY = 'mrsort-cfmap';
+  var UPDCHECK_KEY = 'mrsort-updcheck';
+  var UPDATE_URL = 'https://raw.githubusercontent.com/ceeprus/userscript/main/modrinth/modrinth-list-sort.user.js';
+  // download slider runs on a log scale: position p (0..80) = 10^(p/10) downloads
+  var RANGE_MAX_POS = 80;
   // sorted cards get order 1..N, so anything not yet ranked must sit above N,
   // not at the CSS default of 0 (which would float it to the top of the list)
   var UNRANKED_ORDER = 100000;
@@ -43,8 +48,6 @@
 
   // our key -> Modrinth's own ?s= value, used to sort search results across ALL pages
   var SERVER_SORT = { downloads: 'downloads', followers: 'follows', published: 'newest', updated: 'updated' };
-
-  var TYPE_ORDER = ['mod', 'modpack', 'plugin', 'datapack', 'resourcepack', 'shader'];
 
   var KEYS = [
     { id: 'none', label: 'Default order' },
@@ -66,7 +69,10 @@
   var ICON = {
     eye: ['M2.036 12.322a1 1 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178a1 1 0 0 1 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178Z', 'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z'],
     eyeOff: ['M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.774 3.162 10.066 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243'],
-    deps: ['M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z']
+    deps: ['M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z'],
+    star: ['M11.48 3.499a.562.562 0 0 1 1.04 0l2.125 5.111a.563.563 0 0 0 .475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 0 0-.182.557l1.285 5.385a.562.562 0 0 1-.84.61l-4.725-2.885a.562.562 0 0 0-.586 0L6.982 20.54a.562.562 0 0 1-.84-.61l1.285-5.386a.562.562 0 0 0-.182-.557l-4.204-3.602a.562.562 0 0 1 .321-.988l5.518-.442a.563.563 0 0 0 .475-.345L11.48 3.5Z'],
+    rows: ['M3.75 6h16.5M3.75 12h16.5M3.75 18h16.5'],
+    autoload: ['M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3']
   };
 
   function icon(paths, size) {
@@ -117,7 +123,7 @@
   function getPrefs(kind) {
     var all = load(PREF_KEY, {}) || {};
     var p = all[kind] || {};
-    return { key: p.key || 'none', dir: p.dir === 1 ? 1 : -1, group: !!p.group };
+    return { key: p.key || 'none', dir: p.dir === 1 ? 1 : -1 };
   }
 
   function savePrefs(kind, prefs) {
@@ -199,6 +205,19 @@
     return normName(String(s || '').split(/\s+\(|\s+\[/)[0]);
   }
 
+  // Launchers and CurseForge suffix names differently than Modrinth
+  // ("GeckoLib 4" vs "Geckolib"). Both sides also compare with trailing
+  // edition markers and version numbers stripped.
+  function strippedName(s) {
+    var n = baseName(s);
+    var prev = '';
+    while (n !== prev) {
+      prev = n;
+      n = n.replace(/[\s:-]+(?:\d+(?:\.\d+)*|fabric|forge|neoforge|quilt|edition|remastered|reforged|legacy|updated)$/i, '').trim();
+    }
+    return n;
+  }
+
   // Handles every shape an exported mod list takes:
   //   .connector
   //   .connector (.connector)
@@ -206,7 +225,7 @@
   //   Accelerated Decay (https://modrinth.com/mod/laX5CckD) by ErrorMikey
   //   AdvancedLootInfo (https://modrinth.com/mod/PEPVViac) [1.12.0] by Yanny (file.jar)
   function parseModlist(text) {
-    var names = {}, ids = {}, lines = 0;
+    var names = {}, ids = {}, cf = {}, stripped = {}, lines = 0;
     String(text || '').split(/\r?\n/).forEach(function (line) {
       var l = line.trim();
       if (!l) return;
@@ -217,12 +236,24 @@
       // key lowercased for slug comparison, value original-cased because
       // Modrinth project IDs are case-sensitive in the API
       while ((m = re.exec(l))) ids[m[1].toLowerCase()] = m[1];
+      // CurseForge links: the CF slug often equals the Modrinth slug, so it
+      // goes in directly, and gets a search-API resolution pass on top
+      var cfre = /curseforge\.com\/minecraft\/(?:mc-mods|texture-packs|shaders|data-packs|modpacks|bukkit-plugins)\/([A-Za-z0-9_-]+)/g;
+      while ((m = cfre.exec(l))) {
+        var cs = m[1].toLowerCase();
+        ids[cs] = ids[cs] || m[1];
+        cf[cs] = baseName(l) || cs;
+      }
       // the name is whatever precedes the first "(" or "[" - never split on
       // " by ", or a mod actually called "Death by Fire" would be truncated
       var name = baseName(l);
       if (name) names[name] = 1;
+      // suffix-stripped variants live in their own set: they may only match a
+      // card whose name needed no stripping, or "Mod 1" would equal "Mod 3"
+      var st = strippedName(l);
+      if (st && st !== name) stripped[st] = 1;
     });
-    return { names: names, ids: ids, lines: lines };
+    return { names: names, ids: ids, cf: cf, stripped: stripped, lines: lines };
   }
 
   function loadModlist() {
@@ -262,6 +293,48 @@
       });
       if (changed) refresh();
     }).catch(function () { /* offline: name matching still works */ });
+    resolveCf();
+  }
+
+  // CurseForge slugs that the bulk endpoint could not resolve as Modrinth
+  // slugs go through the search API once each, accepted only on a strict
+  // name/slug match. Results are cached so each CF link costs one search ever.
+  function resolveCf() {
+    var ml = state.modlist;
+    var cfSlugs = Object.keys(ml.cf || {});
+    if (!cfSlugs.length) return;
+    var map = load(CFMAP_KEY, {}) || {};
+    var pending = [];
+    cfSlugs.forEach(function (cs) {
+      var hit = map[cs];
+      if (hit && hit.slug) {
+        ml.ids[hit.slug] = hit.slug;
+        if (hit.title) ml.names[baseName(hit.title)] = 1;
+      } else if (!hit || Date.now() - hit.t > 7 * 86400000) {
+        pending.push(cs);
+      }
+    });
+    pending.slice(0, 20).reduce(function (chain, cs) {
+      return chain.then(function () {
+        return fetch(API + '/search?query=' + encodeURIComponent(ml.cf[cs] || cs) + '&limit=3')
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var want = strippedName(ml.cf[cs] || cs);
+            var best = (d.hits || []).find(function (h) {
+              return h.slug === cs || strippedName(h.title) === want || baseName(h.title) === want;
+            });
+            map = load(CFMAP_KEY, {}) || {};
+            map[cs] = best ? { t: Date.now(), slug: best.slug, title: best.title } : { t: Date.now(), slug: '' };
+            store(CFMAP_KEY, map);
+            if (best && state.modlist === ml) {
+              ml.ids[best.slug] = best.slug;
+              ml.names[baseName(best.title)] = 1;
+            }
+          }).catch(function () { /* next visit retries */ });
+      });
+    }, Promise.resolve()).then(function () {
+      if (state.modlist === ml) refresh();
+    });
   }
 
   function modlistSize() {
@@ -287,7 +360,13 @@
       // full title first, then the title with its own parenthetical stripped -
       // "oωo (owo-lib)" must match a list line that says just "oωo"
       if (ml.names[normName(card.title)]) return true;
-      if (ml.names[baseName(card.title)]) return true;
+      var base = baseName(card.title);
+      if (ml.names[base]) return true;
+      // Suffix bridging ("GeckoLib 4" = "Geckolib") requires one unmodified
+      // side, so two different suffixed names can never match each other:
+      var st = strippedName(card.title);
+      if (st !== base && ml.names[st]) return true; // card suffixed, line plain
+      if (st === base && (ml.stripped || {})[base]) return true; // line suffixed, card plain
     }
     return false;
   }
@@ -305,21 +384,6 @@
 
   function cardHidden(card) { return !!hideReason(card); }
 
-  // ---- compat filter: dim projects that don't run on the chosen setup ------
-
-  function compatActive() { return !!(state.mcver || state.loader); }
-
-  // Loader check only judges projects that declare a real mod loader:
-  // resource packs ("minecraft"), datapacks, shaders pass through untouched.
-  function isCompat(p) {
-    if (!p) return true; // unknown stays undimmed
-    if (state.mcver && p.game_versions.length && p.game_versions.indexOf(state.mcver) < 0) return false;
-    if (state.loader && p.loaders.length) {
-      var declares = p.loaders.some(function (l) { return LOADERS.indexOf(l) > -1; });
-      if (declares && p.loaders.indexOf(state.loader) < 0) return false;
-    }
-    return true;
-  }
 
   function counts() {
     var out = { manual: 0, filtered: 0, total: 0 };
@@ -334,6 +398,61 @@
   }
 
   function hiddenCount() { return counts().total; }
+
+  // ---- starred: pinned to the top of whatever list they appear in ----------
+
+  function loadStars() {
+    var s = load(STAR_KEY, {});
+    return (s && typeof s === 'object') ? s : {};
+  }
+
+  function isStarred(slug) { return !!state.stars[slug.toLowerCase()]; }
+
+  function setStarred(slug, on) {
+    var k = slug.toLowerCase();
+    if (on) state.stars[k] = 1; else delete state.stars[k];
+    store(STAR_KEY, state.stars);
+  }
+
+  function starActive() {
+    if (!state.list) return false;
+    return state.list.cards.some(function (c) { return isStarred(c.slug) && !cardHidden(c); });
+  }
+
+  // ---- download range (log-scale slider positions) -------------------------
+
+  function posToCount(p) { return p <= 0 ? 0 : Math.round(Math.pow(10, p / 10)); }
+
+  function countToPos(n) {
+    if (!n || n <= 0) return 0;
+    return Math.max(0, Math.min(RANGE_MAX_POS, Math.round(10 * Math.log10(n))));
+  }
+
+  function fmtCount(n) {
+    if (n >= 1e6) return (n / 1e6 >= 10 ? Math.round(n / 1e6) : (n / 1e6).toFixed(1)) + 'M';
+    if (n >= 1e3) return (n / 1e3 >= 10 ? Math.round(n / 1e3) : (n / 1e3).toFixed(1)) + 'K';
+    return String(n);
+  }
+
+  // "10k", "1.5m", "25000" -> number; empty/garbage -> 0 (no bound)
+  function parseCount(s) {
+    var m = /^\s*([\d.,]+)\s*([km]?)\s*$/i.exec(String(s || ''));
+    if (!m) return 0;
+    var n = parseFloat(m[1].replace(/,/g, ''));
+    if (!isFinite(n) || n < 0) return 0;
+    if (/k/i.test(m[2])) n *= 1e3;
+    if (/m/i.test(m[2])) n *= 1e6;
+    return Math.round(n);
+  }
+
+  // bounds are exact download counts; 0 means that side is unbounded
+  function rangeActive() { return state.dlMinC > 0 || state.dlMaxC > 0; }
+
+  function inRange(downloads) {
+    if (state.dlMinC > 0 && downloads < state.dlMinC) return false;
+    if (state.dlMaxC > 0 && downloads > state.dlMaxC) return false;
+    return true;
+  }
 
   // ------------------------------------------------------------------- data
 
@@ -517,11 +636,6 @@
     list.cards.forEach(function (c) { c.el.style.removeProperty('order'); });
   }
 
-  function typeRank(p) {
-    var i = TYPE_ORDER.indexOf(p.project_type);
-    return i < 0 ? TYPE_ORDER.length : i;
-  }
-
   function sortCards(cards, data, prefs, keyActive, needData) {
     var def = keyDef(prefs.key);
     var entries = cards.map(function (c) {
@@ -530,6 +644,7 @@
         el: c.el,
         index: c.index,
         hidden: cardHidden(c),
+        star: isStarred(c.slug),
         // without project data nothing is "unresolved" - the slug is all we used
         missing: needData ? !d : false,
         p: d ? derive(d) : { title: '', downloads: 0, followers: 0, publishedMs: 0, updatedMs: 0, perDay: 0, verRank: -1, project_type: '' }
@@ -539,10 +654,8 @@
     entries.sort(function (a, b) {
       // revealed-but-hidden projects sink below everything else
       if (a.hidden !== b.hidden) return a.hidden ? 1 : -1;
-      if (prefs.group) {
-        var t = typeRank(a.p) - typeRank(b.p);
-        if (t) return t;
-      }
+      // starred projects float above everything visible
+      if (!a.hidden && a.star !== b.star) return a.star ? -1 : 1;
       // projects we could not resolve keep their relative order at the end
       if (a.missing !== b.missing) return a.missing ? 1 : -1;
       if (keyActive && !a.missing) {
@@ -595,14 +708,59 @@
     // tag, so these elements can never be adopted.
     'mrsort-bar,mrsort-card,mrsort-sentinel-box{display:block}',
     'mrsort-pill-box{display:inline-block}',
+    // the site resets radios/checkboxes to appearance:none and width:0
+    '.mrsort input[type=checkbox],.mrsort input[type=radio],.mrsort-side-body input[type=checkbox],.mrsort-side-body input[type=radio]{appearance:auto!important;-webkit-appearance:auto!important;width:1rem!important;height:1rem!important;margin:0;accent-color:var(--color-brand,#1bd96a);cursor:pointer}',
     'mrsort-tip{display:none;position:absolute;z-index:9999;min-width:180px;max-width:260px;background:var(--color-raised-bg,#27292e);color:var(--color-base,#b0bac5);border:1px solid var(--color-button-bg,#34363c);border-radius:.75rem;padding:.5rem .75rem;font-size:.8125rem;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.35)}',
     '.mrsort-tip-head{font-weight:600;color:var(--color-contrast,#fff)}',
-    '.mrsort-card-incompat{opacity:.4;filter:grayscale(.5)}',
     '.mrsort-depbtn{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease}',
     '.mrsort-depbtn:hover{opacity:1;color:var(--color-brand,#1bd96a)}',
     '.mrsort-depbtn svg{pointer-events:none}',
     '.mrsort-owned{display:inline-flex;align-items:center;justify-content:center;width:1.15rem;height:1.15rem;border-radius:9999px;background:var(--color-brand,#1bd96a);color:var(--color-accent-contrast,#04180f);font-size:.75rem;font-weight:700;pointer-events:none}',
     '.mrsort-mlmodes label{display:flex;align-items:center;gap:.25rem;font-size:.8125rem;cursor:pointer}',
+    // outside the download range = gone, not dimmed
+    '.mrsort-card-range{display:none!important}',
+    '.mrsort-star{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease,color .12s ease}',
+    '.mrsort-star:hover{opacity:1;color:var(--color-orange,#ffa347)}',
+    '.mrsort-star[data-on="1"]{opacity:1;color:var(--color-orange,#ffa347)}',
+    '.mrsort-star[data-on="1"] svg{fill:currentColor}',
+    '.mrsort-star svg{pointer-events:none}',
+    '.mrsort .mrsort-compact-btn{display:flex;align-items:center;padding:.5rem .6rem}',
+    '.mrsort .mrsort-compact-btn[data-on="1"]{color:var(--color-brand,#1bd96a)}',
+    // compact card: 40px icon, title + one-line description; the description
+    // expands only after a deliberate hover (see DESC_HOVER_MS)
+    '.mrsort-compact-card.mrsort-compact-card [class*="card-list__tags"]{display:none!important}',
+    '.mrsort-compact-card.mrsort-compact-card [class*="project-card__icon"]{--_size:56px!important;--_override-size:56px!important;padding:0!important}',
+    '.mrsort-compact-card.mrsort-compact-card [class*="card-list__info"]{min-width:0!important;overflow:hidden!important;align-items:flex-start!important;text-align:left!important}',
+    '.mrsort-compact-card.mrsort-compact-card [class*="card-list__stats"]{min-width:0!important;flex-shrink:1!important}',
+    '.mrsort-compact-card.mrsort-compact-card [class*="grid-project-card-list"]{grid-template:"icon info stats" auto/auto 1fr auto!important;align-items:center!important;padding:.55rem .9rem!important;column-gap:.75rem!important;row-gap:0!important}',
+    '.mrsort-compact-card.mrsort-compact-card .project-card-title{font-size:1rem!important;line-height:1.3!important}',
+    '.mrsort-compact-card.mrsort-compact-card [class*="project-card-summary"]{white-space:nowrap!important;text-overflow:ellipsis!important;overflow:hidden!important;font-size:.8125rem!important;line-height:1.35!important;max-width:100%!important;width:100%!important}',
+    '.mrsort-compact-card.mrsort-compact-card.mrsort-desc-open [class*="project-card-summary"]{white-space:normal!important}',
+    '.mrsort-onlyhidden{font-size:.875rem}',
+    
+    '.mrsort-range-nums{display:flex;align-items:center;gap:.3rem;font-size:.8125rem}',
+    '.mrsort-rnum{width:4.2rem;background:var(--color-bg,#16181c);color:var(--color-contrast,#fff);border:1px solid transparent;border-radius:.5rem;padding:.25rem .45rem;font:inherit;font-size:.8125rem;outline:none;text-align:center}',
+    '.mrsort-rnum:focus{border-color:var(--color-brand,#1bd96a)}',
+    '.mrsort-pill-icon{border-radius:9999px;min-width:2.25rem;height:2.25rem;padding:0 .45rem;justify-content:center;gap:.25rem}',
+    '.mrsort-pill-icon[data-on="1"]{background:rgba(27,217,106,.25);color:var(--color-brand,#1bd96a)}','.mrsort-side-body .mrsort-range{flex-wrap:wrap}',
+    '.mrsort .mrsort-update{background:var(--color-brand,#1bd96a);color:var(--color-accent-contrast,#04180f);border-radius:.75rem;padding:.4rem .8rem;font-weight:700;font-size:.8125rem;text-decoration:none}',
+    // dual-thumb range: both inputs overlay one track, only the thumbs take clicks
+    '.mrsort-range{display:flex;align-items:center;gap:.6rem;background:var(--color-button-bg,#34363c);border-radius:.75rem;padding:.35rem .9rem}',
+    '.mrsort-range-track{position:relative;width:120px;height:20px}',
+    '.mrsort-range-rail{position:absolute;top:8px;left:0;right:0;height:4px;border-radius:2px;background:var(--color-bg,#16181c)}',
+    '.mrsort-range-fill{position:absolute;top:8px;height:4px;border-radius:2px;background:var(--color-brand,#1bd96a)}',
+    '.mrsort-r{position:absolute;left:0;top:0;width:100%;height:20px;margin:0;padding:0;background:none;border:none;-webkit-appearance:none;appearance:none;pointer-events:none}',
+    '.mrsort-r::-webkit-slider-runnable-track{background:transparent;height:20px}',
+    '.mrsort-r::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;pointer-events:auto;width:14px;height:14px;margin-top:3px;border-radius:50%;background:var(--color-contrast,#fff);border:2px solid var(--color-brand,#1bd96a);cursor:pointer}',
+    '.mrsort-r::-moz-range-track{background:transparent;height:20px}',
+    '.mrsort-r::-moz-range-thumb{pointer-events:auto;width:12px;height:12px;border-radius:50%;background:var(--color-contrast,#fff);border:2px solid var(--color-brand,#1bd96a);cursor:pointer}',
+    '.mrsort-range-label{font-size:.8125rem;min-width:5.5rem;text-align:right}',
+    // in the sidebar card the track stretches to the card width
+    '.mrsort-side-body .mrsort-range{width:100%;box-sizing:border-box;background:none;padding:0;flex-direction:column;align-items:stretch;gap:.5rem}',
+    '.mrsort-side-body .mrsort-range-track{width:auto}',
+    '.mrsort-side-body .mrsort-range-label{display:none}',
+    '.mrsort-side-body .mrsort-range-nums{display:flex;justify-content:space-between;width:100%}',
+    '.mrsort-side-body .mrsort-rnum{width:5rem;text-align:left}',
     '.mrsort{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .75rem;font-size:.875rem;color:var(--color-base,#b0bac5)}',
     // matches Modrinth's own dropdown pills: #34363c, 12px radius, 8x16 pad, 600 weight
     '.mrsort select,.mrsort button{background:var(--color-button-bg,#34363c);color:var(--color-button-text,#b0bac5);border:1px solid var(--color-button-border,transparent);border-radius:.75rem;padding:.5rem 1rem;font:inherit;font-weight:600;line-height:1.25;cursor:pointer;transition:filter .2s}',
@@ -642,12 +800,13 @@
     '.mrsort-modlist-note{color:var(--color-secondary,#96a2b0);font-size:.75rem;margin-left:auto}',
     // toolbar pill + native-look switch (40x20, 12px knob, brand green when on)
     '.mrsort-pill-wrap{position:relative;display:inline-block;min-width:max-content}',
-    '.mrsort-pill{cursor:pointer;display:flex;align-items:center;gap:.625rem;min-height:1.25rem;border-radius:.75rem;background:var(--color-button-bg,#34363c);padding:.5rem 1rem;font-weight:600;color:var(--color-base,#b0bac5);user-select:none;transition:filter .2s}',
+    '.mrsort-pill{cursor:pointer;display:flex;align-items:center;gap:.625rem;box-sizing:border-box;min-height:2.25rem;border-radius:.75rem;background:var(--color-button-bg,#34363c);padding:.5rem 1rem;font-weight:600;color:var(--color-base,#b0bac5);user-select:none;transition:filter .2s}',
     '.mrsort-pill:hover{filter:brightness(115%)}',
     '.mrsort-switch{display:inline-flex;align-items:center;width:40px;height:20px;flex:0 0 auto;border-radius:9999px;background:var(--color-bg,#16181c);padding:4px;box-sizing:border-box;transition:background .2s}',
     '.mrsort-switch-knob{width:12px;height:12px;border-radius:9999px;background:var(--color-secondary,#9fa4b3);transition:transform .2s,background .2s}',
-    '.mrsort-pill[data-on="1"] .mrsort-switch{background:var(--color-brand,#1bd96a)}',
-    '.mrsort-pill[data-on="1"] .mrsort-switch-knob{transform:translateX(20px);background:var(--color-accent-contrast,#fff)}',
+    '.mrsort-pill[data-on="1"] .mrsort-switch,.mrsort-switch[data-on="1"]{background:var(--color-brand,#1bd96a)}',
+    '.mrsort-pill[data-on="1"] .mrsort-switch-knob,.mrsort-switch[data-on="1"] .mrsort-switch-knob{transform:translateX(20px);background:var(--color-accent-contrast,#fff)}',
+    'button.mrsort-switch{border:0;cursor:pointer;flex:0 0 auto;padding:4px!important}',
     '.mrsort-sentinel{width:fit-content;margin:.75rem auto;padding:.5rem 1rem;border-radius:.75rem;background:var(--color-button-bg,#34363c);color:var(--color-base,#b0bac5);font-weight:600;font-size:.875rem;text-align:center;transition:filter .2s}',
     '.mrsort-sentinel:hover{filter:brightness(115%)}',
     '.mrsort-sentinel:empty{background:none;padding:.75rem 0;min-height:1.25rem}',
@@ -670,6 +829,7 @@
     bar.setAttribute('data-mrsort', '1');
 
     var label = document.createElement('span');
+    label.className = 'mrsort-sort-label';
     label.textContent = 'Sort:';
 
     var select = document.createElement('select');
@@ -685,39 +845,23 @@
     dir.className = 'mrsort-dir';
     dir.type = 'button';
 
-    var groupWrap = document.createElement('label');
-    var group = document.createElement('input');
-    group.type = 'checkbox';
-    group.className = 'mrsort-group';
-    groupWrap.appendChild(group);
-    groupWrap.appendChild(document.createTextNode('Group by type'));
+    var compact = document.createElement('button');
+    compact.type = 'button';
+    compact.className = 'mrsort-compact-btn';
+    compact.title = 'Compact cards';
+    compact.appendChild(icon(ICON.rows));
+    compact.addEventListener('click', function () {
+      state.compact = !state.compact;
+      store(COMPACT_KEY, state.compact);
+      refresh();
+    });
 
-    var mcver = document.createElement('select');
-    mcver.className = 'mrsort-mcver';
-    mcver.title = 'Dim projects that don\'t support this Minecraft version';
-    var loader = document.createElement('select');
-    loader.className = 'mrsort-loader';
-    loader.title = 'Dim projects that don\'t support this loader';
-    var lo = document.createElement('option');
-    lo.value = '';
-    lo.textContent = 'Any loader';
-    loader.appendChild(lo);
-    LOADERS.forEach(function (l) {
-      var o = document.createElement('option');
-      o.value = l;
-      o.textContent = l.charAt(0).toUpperCase() + l.slice(1);
-      loader.appendChild(o);
-    });
-    mcver.addEventListener('change', function () {
-      state.mcver = mcver.value;
-      store(MCVER_KEY, state.mcver);
-      refresh();
-    });
-    loader.addEventListener('change', function () {
-      state.loader = loader.value;
-      store(LOADER_KEY, state.loader);
-      refresh();
-    });
+    var upd = document.createElement('a');
+    upd.className = 'mrsort-update';
+    upd.target = '_blank';
+    upd.rel = 'noopener';
+    upd.href = UPDATE_URL;
+    upd.style.display = 'none';
 
     var autoWrap = document.createElement('label');
     autoWrap.className = 'mrsort-auto';
@@ -748,12 +892,11 @@
     bar.appendChild(label);
     bar.appendChild(select);
     bar.appendChild(dir);
-    bar.appendChild(mcver);
-    bar.appendChild(loader);
-    bar.appendChild(groupWrap);
+    bar.appendChild(compact);
     bar.appendChild(autoWrap);
     bar.appendChild(eye);
     bar.appendChild(unhide);
+    bar.appendChild(upd);
     bar.appendChild(status);
 
     select.addEventListener('change', function () {
@@ -766,7 +909,6 @@
       state.prefs.dir = state.prefs.dir === 1 ? -1 : 1;
       onChange();
     });
-    group.addEventListener('change', onChange);
     eye.addEventListener('click', function () {
       state.reveal = !state.reveal;
       store(REVEAL_KEY, state.reveal);
@@ -783,9 +925,18 @@
 
   function paintBar() {
     if (!state.bar) return;
+    // the toolbar hosts our pills whenever it exists; bar controls are fallback
+    var pillsPlaced = ensureToolbarPills();
+
+    // the site's own "Sort by" covers search pages, so ours bows out there
+    var siteSort = canPaginate() && pillsPlaced;
+    state.siteSort = siteSort;
+    ['.mrsort-sort-label', '.mrsort-key', '.mrsort-dir'].forEach(function (sel) {
+      state.bar.querySelector(sel).style.display = siteSort ? 'none' : '';
+    });
+
     var def = keyDef(state.prefs.key);
     state.bar.querySelector('.mrsort-key').value = state.prefs.key;
-    state.bar.querySelector('.mrsort-group').checked = state.prefs.group;
 
     var dir = state.bar.querySelector('.mrsort-dir');
     var asc = state.prefs.dir === 1;
@@ -798,6 +949,7 @@
 
     var n = hiddenCount();
     var eye = state.bar.querySelector('.mrsort-eye');
+    eye.style.display = pillsPlaced ? 'none' : '';
     var on = state.reveal ? '1' : '0';
     // only swap the icon when the state really changed - rebuilding it under
     // the cursor mid-press would make the browser drop the click
@@ -813,18 +965,30 @@
     state.bar.querySelector('.mrsort-unhide-all').style.display =
       (state.reveal && Object.keys(state.hidden).length) ? '' : 'none';
 
-    paintMcver();
-    state.bar.querySelector('.mrsort-loader').value = state.loader;
+    paintRange();
+    var cbtn = state.bar.querySelector('.mrsort-compact-btn');
+    cbtn.style.display = pillsPlaced ? 'none' : '';
+    cbtn.setAttribute('data-on', state.compact ? '1' : '0');
+    cbtn.title = state.compact ? 'Normal cards' : 'Compact cards';
+    var upd = state.bar.querySelector('.mrsort-update');
+    upd.style.display = state.updAvail ? '' : 'none';
+    if (state.updAvail && upd.textContent !== 'Update to v' + state.updAvail) {
+      upd.textContent = 'Update to v' + state.updAvail;
+    }
 
-    // the toolbar pill replaces the bar checkbox whenever the toolbar exists
-    var pillPlaced = ensureAutoPill();
     var autoWrap = state.bar.querySelector('.mrsort-auto');
-    autoWrap.style.display = (canPaginate() && !pillPlaced) ? '' : 'none';
+    autoWrap.style.display = (canPaginate() && !pillsPlaced) ? '' : 'none';
     autoWrap.querySelector('.mrsort-auto-input').checked = state.scroll.enabled;
 
     ensureFilterHost();
     paintChips();
     paintModlist();
+
+    // hide the bar entirely when the toolbar took every control it held
+    var barEmpty = siteSort && !state.updAvail && !state.reveal &&
+      state.bar.querySelector('.mrsort-status').textContent === '' &&
+      !state.bar.querySelector('.mrsort-filter'); // filter present = fallback mode
+    state.bar.style.display = barEmpty ? 'none' : '';
   }
 
   // Tag-style exclude box: type a word, press Enter or type a comma, and it
@@ -1002,7 +1166,7 @@
     }
   }
 
-  var SETTINGS_KEYS = [PREF_KEY, HIDE_KEY, REVEAL_KEY, AUTOLOAD_KEY, BLOCK_KEY, MODLIST_KEY, MODLIST_MODE_KEY, MCVER_KEY, LOADER_KEY];
+  var SETTINGS_KEYS = [PREF_KEY, HIDE_KEY, REVEAL_KEY, AUTOLOAD_KEY, BLOCK_KEY, MODLIST_KEY, MODLIST_MODE_KEY, STAR_KEY, RANGE_KEY, COMPACT_KEY];
 
   function exportSettings() {
     var out = { app: 'modrinth-plus', version: 1 };
@@ -1028,8 +1192,11 @@
       state.modlist = loadModlist();
       state.reveal = load(REVEAL_KEY, false) === true;
       state.mlMode = (function (m) { return m === 'only' || m === 'badge' ? m : 'exclude'; })(load(MODLIST_MODE_KEY, 'exclude'));
-      state.mcver = String(load(MCVER_KEY, '') || '');
-      state.loader = String(load(LOADER_KEY, '') || '');
+      state.stars = loadStars();
+      var rr = load(RANGE_KEY, null);
+      state.dlMinC = rr && rr.minC !== undefined ? (+rr.minC || 0) : (rr && rr.min > 0 ? posToCount(Math.min(+rr.min, RANGE_MAX_POS)) : 0);
+      state.dlMaxC = rr && rr.maxC !== undefined ? (+rr.maxC || 0) : (rr && rr.max >= 0 && rr.max < RANGE_MAX_POS ? posToCount(+rr.max) : 0);
+      state.compact = load(COMPACT_KEY, false) === true;
       state.scroll.enabled = load(AUTOLOAD_KEY, true) !== false;
       state.prefs = getPrefs(state.kind);
       if (state.modlistArea) state.modlistArea.value = state.modlist.raw || '';
@@ -1038,6 +1205,38 @@
       refresh();
     };
     reader.readAsText(file);
+  }
+
+  // Same row pattern as the site's own "Exclude plugins" toggle: label text
+  // left, switch right. A native checkbox here inherits the site's input
+  // sizing and renders warped.
+  function buildOnlyHidden() {
+    if (state.onlyEl) return state.onlyEl;
+    var wrap = document.createElement('div');
+    wrap.className = 'mrsort-onlyhidden';
+    var lab = document.createElement('label');
+    lab.className = 'flex cursor-pointer items-center justify-between text-secondary gap-3 font-semibold';
+    var txt = document.createElement('span');
+    txt.className = 'text-sm';
+    txt.textContent = 'Show hidden only';
+    var sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'mrsort-switch mrsort-only-switch';
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-checked', 'false');
+    var knob = document.createElement('span');
+    knob.className = 'mrsort-switch-knob';
+    sw.appendChild(knob);
+    lab.appendChild(txt);
+    lab.appendChild(sw);
+    sw.addEventListener('click', function (e) {
+      e.preventDefault();
+      state.onlyHidden = !state.onlyHidden;
+      refresh();
+    });
+    wrap.appendChild(lab);
+    state.onlyEl = wrap;
+    return wrap;
   }
 
   // The filter sidebar's own cards, so ours can sit among them
@@ -1099,31 +1298,47 @@
   function ensureFilterHost() {
     var filter = buildFilter();
     var modlist = buildModlist();
+    var range = buildRange();
+    var only = buildOnlyHidden();
     var slot = sidebarSlot();
 
     if (!slot) {
-      [state.filterCard, state.modlistCard].forEach(function (c) {
+      [state.filterCard, state.modlistCard, state.rangeCard, state.onlyCard].forEach(function (c) {
         if (c && c.parentElement) c.parentElement.removeChild(c);
       });
-      if (state.bar && filter.parentElement !== state.bar) {
-        state.bar.insertBefore(filter, state.bar.querySelector('.mrsort-eye'));
-      }
-      if (state.bar && modlist.parentElement !== state.bar) {
-        state.bar.insertBefore(modlist, state.bar.querySelector('.mrsort-eye'));
-      }
+      [range, filter, modlist, only].forEach(function (el) {
+        if (state.bar && el.parentElement !== state.bar) {
+          state.bar.insertBefore(el, state.bar.querySelector('.mrsort-eye'));
+        }
+      });
+      paintRange();
+      paintOnlyHidden();
       return;
     }
 
+    if (!state.rangeCard) state.rangeCard = sideCard('Downloads', range);
     if (!state.filterCard) state.filterCard = sideCard('Exclude by name', filter);
     if (!state.modlistCard) state.modlistCard = sideCard('Exclude a modlist', modlist);
+    if (!state.onlyCard) state.onlyCard = sideCard('View', only);
     // navigating bar-fallback pages steals the widgets out of the cards, so
     // put them back before re-attaching the cards
-    var fb = state.filterCard.querySelector('.mrsort-side-body');
-    if (filter.parentElement !== fb) fb.appendChild(filter);
-    var mb = state.modlistCard.querySelector('.mrsort-side-body');
-    if (modlist.parentElement !== mb) mb.appendChild(modlist);
-    if (state.filterCard.parentElement !== slot) slot.appendChild(state.filterCard);
-    if (state.modlistCard.parentElement !== slot) slot.appendChild(state.modlistCard);
+    [[state.rangeCard, range], [state.filterCard, filter], [state.modlistCard, modlist], [state.onlyCard, only]].forEach(function (pair) {
+      var body = pair[0].querySelector('.mrsort-side-body');
+      if (pair[1].parentElement !== body) body.appendChild(pair[1]);
+      if (pair[0].parentElement !== slot) slot.appendChild(pair[0]);
+    });
+    paintRange(); // freshly built widgets need their first paint
+    paintOnlyHidden();
+  }
+
+  function paintOnlyHidden() {
+    if (!state.onlyEl) return;
+    var sw = state.onlyEl.querySelector('.mrsort-only-switch');
+    var on = state.onlyHidden ? '1' : '0';
+    if (sw.getAttribute('data-on') !== on) {
+      sw.setAttribute('data-on', on);
+      sw.setAttribute('aria-checked', state.onlyHidden ? 'true' : 'false');
+    }
   }
 
   // Rebuilt only when the term list actually changes - the same idempotency
@@ -1153,40 +1368,148 @@
   // Version dropdown fills from the versions the current cards actually
   // declare (release-shaped only), so it never lists snapshots or versions
   // nothing on the page supports. Rebuilt only when that set changes.
-  function paintMcver() {
-    var sel = state.bar.querySelector('.mrsort-mcver');
-    var vers = {};
-    if (state.mcver) vers[state.mcver] = 1;
-    if (state.list) {
-      var cache = loadCache();
-      state.list.cards.forEach(function (c) {
-        var hit = cache[c.slug.toLowerCase()];
-        var gv = hit && hit.d && hit.d.game_versions || [];
-        for (var i = 0; i < gv.length; i++) if (/^\d+(\.\d+)*$/.test(gv[i])) vers[gv[i]] = 1;
-      });
+  // Dual-thumb download range on a log scale, "price range" style. Lives in
+  // the filter sidebar as its own card, falling back into the bar elsewhere.
+  function buildRange() {
+    if (state.rangeEl) return state.rangeEl;
+    var range = document.createElement('div');
+    range.className = 'mrsort-range';
+    range.title = 'Dim projects outside this download range';
+    var track = document.createElement('span');
+    track.className = 'mrsort-range-track';
+    var rail = document.createElement('span');
+    rail.className = 'mrsort-range-rail';
+    var fill = document.createElement('span');
+    fill.className = 'mrsort-range-fill';
+    var rMin = document.createElement('input');
+    var rMax = document.createElement('input');
+    [rMin, rMax].forEach(function (r) {
+      r.type = 'range';
+      r.min = '0';
+      r.max = String(RANGE_MAX_POS);
+      r.step = '1';
+      r.className = 'mrsort-r';
+    });
+    rMin.classList.add('mrsort-r-min');
+    rMax.classList.add('mrsort-r-max');
+    var rLabel = document.createElement('span');
+    rLabel.className = 'mrsort-range-label';
+    track.appendChild(rail);
+    track.appendChild(fill);
+    track.appendChild(rMin);
+    track.appendChild(rMax);
+    range.appendChild(track);
+    range.appendChild(rLabel);
+
+    // exact bounds, typed: plain numbers or K/M suffixes, empty = no bound
+    var nums = document.createElement('span');
+    nums.className = 'mrsort-range-nums';
+    var nMin = document.createElement('input');
+    var nMax = document.createElement('input');
+    nMin.className = 'mrsort-rnum mrsort-rnum-min';
+    nMax.className = 'mrsort-rnum mrsort-rnum-max';
+    nMin.placeholder = 'min';
+    nMax.placeholder = 'max';
+    [nMin, nMax].forEach(function (n) {
+      n.type = 'text';
+      n.spellcheck = false;
+      n.title = 'Exact amount - plain number or 10K / 1.5M';
+    });
+    var dash = document.createElement('span');
+    dash.textContent = '–';
+    nums.appendChild(nMin);
+    nums.appendChild(dash);
+    nums.appendChild(nMax);
+    range.appendChild(nums);
+
+    function commitRange() {
+      store(RANGE_KEY, { minC: state.dlMinC, maxC: state.dlMaxC });
+      refresh();
     }
-    var sorted = Object.keys(vers).sort(function (a, b) { return verRank([b]) - verRank([a]); });
-    var key = sorted.join(',');
-    if (sel.getAttribute('data-vers') !== key) {
-      sel.setAttribute('data-vers', key);
-      sel.textContent = '';
-      var any = document.createElement('option');
-      any.value = '';
-      any.textContent = 'Any MC version';
-      sel.appendChild(any);
-      sorted.forEach(function (v) {
-        var o = document.createElement('option');
-        o.value = v;
-        o.textContent = v;
-        sel.appendChild(o);
-      });
+    function fromSliders() {
+      var lo = Math.min(+rMin.value, +rMax.value);
+      var hi = Math.max(+rMin.value, +rMax.value);
+      state.dlMinC = lo > 0 ? posToCount(lo) : 0;
+      state.dlMaxC = hi < RANGE_MAX_POS ? posToCount(hi) : 0;
+      paintRange();
     }
-    sel.value = state.mcver;
-    if (sel.value !== state.mcver) sel.value = ''; // stored version absent from this page
+    [rMin, rMax].forEach(function (r) {
+      r.addEventListener('input', fromSliders);
+      r.addEventListener('change', function () { fromSliders(); commitRange(); });
+    });
+    function fromNums() {
+      var lo = parseCount(nMin.value);
+      var hi = parseCount(nMax.value);
+      if (lo && hi && lo > hi) { var t = lo; lo = hi; hi = t; }
+      state.dlMinC = lo;
+      state.dlMaxC = hi;
+      paintRange();
+      commitRange();
+    }
+    [nMin, nMax].forEach(function (n) {
+      n.addEventListener('change', fromNums);
+      n.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); fromNums(); } });
+    });
+
+    state.rangeEl = range;
+    return range;
+  }
+
+  function paintRange() {
+    if (!state.rangeEl) return;
+    var rMin = state.rangeEl.querySelector('.mrsort-r-min');
+    var rMax = state.rangeEl.querySelector('.mrsort-r-max');
+    var fill = state.rangeEl.querySelector('.mrsort-range-fill');
+    var label = state.rangeEl.querySelector('.mrsort-range-label');
+    var minPos = countToPos(state.dlMinC);
+    var maxPos = state.dlMaxC > 0 ? countToPos(state.dlMaxC) : RANGE_MAX_POS;
+    if (String(rMin.value) !== String(minPos)) rMin.value = minPos;
+    if (String(rMax.value) !== String(maxPos)) rMax.value = maxPos;
+    var lo = minPos / RANGE_MAX_POS * 100;
+    var hi = maxPos / RANGE_MAX_POS * 100;
+    fill.style.left = lo + '%';
+    fill.style.width = Math.max(0, hi - lo) + '%';
+    var txt = !rangeActive() ? 'All downloads'
+      : (state.dlMinC > 0 ? fmtCount(state.dlMinC) : '0') + ' – ' +
+        (state.dlMaxC > 0 ? fmtCount(state.dlMaxC) : '∞');
+    if (label.textContent !== txt) label.textContent = txt;
+    var nMin = state.rangeEl.querySelector('.mrsort-rnum-min');
+    var nMax = state.rangeEl.querySelector('.mrsort-rnum-max');
+    // don't fight the keyboard: only sync the boxes when not being edited
+    if (document.activeElement !== nMin) nMin.value = state.dlMinC > 0 ? fmtCount(state.dlMinC) : '';
+    if (document.activeElement !== nMax) nMax.value = state.dlMaxC > 0 ? fmtCount(state.dlMaxC) : '';
+  }
+
+  // Compares dotted versions against the published header once a day and
+  // offers an update link; the stamp is written only after a successful fetch.
+  function verCmp(a, b) {
+    var x = String(a).split('.'), y = String(b).split('.');
+    for (var i = 0; i < Math.max(x.length, y.length); i++) {
+      var d = (+x[i] || 0) - (+y[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  }
+
+  function checkUpdate() {
+    var mine = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '';
+    if (!mine) return;
+    var st = load(UPDCHECK_KEY, null);
+    if (st && Date.now() - st.t < 24 * 36e5) {
+      if (st.v && verCmp(st.v, mine) > 0) { state.updAvail = st.v; paintBar(); }
+      return;
+    }
+    fetch(UPDATE_URL, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+      var m = /@version\s+([\d.]+)/.exec(t);
+      if (!m) return;
+      store(UPDCHECK_KEY, { t: Date.now(), v: m[1] });
+      if (verCmp(m[1], mine) > 0) { state.updAvail = m[1]; paintBar(); }
+    }).catch(function () { /* retried next day */ });
   }
 
   function setStatus(text, warn) {
     if (!state.bar) return;
+    if (text) state.bar.style.display = '';
     var el = state.bar.querySelector('.mrsort-status');
     el.textContent = text || '';
     if (warn) el.setAttribute('data-warn', '1'); else el.removeAttribute('data-warn');
@@ -1204,7 +1527,16 @@
     }
     if (state.filterCard && !state.filterCard.querySelector('.mrsort-side-body')) state.filterCard = null;
     if (state.modlistCard && !state.modlistCard.querySelector('.mrsort-side-body')) state.modlistCard = null;
-    if (state.autoPill && !state.autoPill.querySelector('.mrsort-switch')) {
+    if (state.rangeCard && !state.rangeCard.querySelector('.mrsort-side-body')) state.rangeCard = null;
+    if (state.rangeEl && state.rangeEl.querySelector('.project-card-title')) state.rangeEl = null;
+    if (state.onlyCard && !state.onlyCard.querySelector('.mrsort-side-body')) state.onlyCard = null;
+    [['eyePill', '.mrsort-eyepill'], ['compactPill', '.mrsort-compactpill']].forEach(function (p) {
+      if (state[p[0]] && !state[p[0]].querySelector(p[1])) {
+        if (state[p[0]].parentElement) state[p[0]].parentElement.removeChild(state[p[0]]);
+        state[p[0]] = null;
+      }
+    });
+    if (state.autoPill && !state.autoPill.querySelector('.mrsort-autopill')) {
       if (state.autoPill.parentElement) state.autoPill.parentElement.removeChild(state.autoPill);
       state.autoPill = null;
     }
@@ -1307,6 +1639,32 @@
       }
       if (dbtn.getAttribute('data-slug') !== c.slug) dbtn.setAttribute('data-slug', c.slug);
 
+      // star pin, between deps and the eye
+      var sbtn = c.el.querySelector('.mrsort-star');
+      if (!sbtn) {
+        sbtn = document.createElement('button');
+        sbtn.type = 'button';
+        sbtn.className = 'mrsort-star';
+        sbtn.classList.add('smart-clickable:allow-pointer-events');
+        sbtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var slug = sbtn.getAttribute('data-slug');
+          if (!slug) return;
+          setStarred(slug, !isStarred(slug));
+          refresh();
+        });
+        btn.parentElement.insertBefore(sbtn, btn);
+      }
+      if (sbtn.getAttribute('data-slug') !== c.slug) sbtn.setAttribute('data-slug', c.slug);
+      var starOn = isStarred(c.slug) ? '1' : '0';
+      if (sbtn.getAttribute('data-on') !== starOn) {
+        sbtn.setAttribute('data-on', starOn);
+        sbtn.title = starOn === '1' ? 'Unpin from top' : 'Pin to top of list';
+        sbtn.textContent = '';
+        sbtn.appendChild(icon(ICON.star));
+      }
+
       // "in your modlist" badge (badge mode only)
       var owned = state.mlMode === 'badge' && inModlist(c);
       var chip = c.el.querySelector('.mrsort-owned');
@@ -1403,11 +1761,84 @@
     if (!state.list) return;
     state.list.cards.forEach(function (c) {
       var hidden = cardHidden(c);
-      c.el.classList.toggle('mrsort-card-hidden', hidden && !state.reveal);
-      c.el.classList.toggle('mrsort-card-dim', hidden && state.reveal);
+      if (state.onlyHidden) {
+        // inverted view: only the hidden ones, shown at full strength
+        c.el.classList.toggle('mrsort-card-hidden', !hidden);
+        c.el.classList.remove('mrsort-card-dim');
+      } else {
+        c.el.classList.toggle('mrsort-card-hidden', hidden && !state.reveal);
+        c.el.classList.toggle('mrsort-card-dim', hidden && state.reveal);
+      }
+      c.el.classList.toggle('mrsort-compact-card', state.compact);
+      if (!state.compact) c.el.classList.remove('mrsort-desc-open');
+      compactInline(c.el, state.compact);
     });
     decorate();
   }
+
+  // The site re-declares these with !important from styles injected after
+  // ours, so stylesheet order can flip who wins. Inline style with the
+  // "important" priority outranks every stylesheet, always.
+  function compactInline(el, on) {
+    // no-op unless the state actually changes, and never touch a card that
+    // was never made compact - the site owns its inline styles
+    var was = el.getAttribute('data-mrsort-inline') === '1';
+    if (on === was) return;
+    el.setAttribute('data-mrsort-inline', on ? '1' : '0');
+
+    var img = el.querySelector('[class*="project-card__icon"]');
+    var info = el.querySelector('[class*="card-list__info"]');
+    if (img) {
+      if (on) {
+        // the card's own inline --_size must come back when compact ends
+        if (!img.hasAttribute('data-mrsort-size')) {
+          img.setAttribute('data-mrsort-size', img.style.getPropertyValue('--_size') || '');
+        }
+        img.style.setProperty('padding', '0', 'important');
+        img.style.setProperty('--_size', '56px', 'important');
+        img.style.setProperty('--_override-size', '56px', 'important');
+      } else {
+        img.style.removeProperty('padding');
+        img.style.removeProperty('--_override-size');
+        var orig = img.getAttribute('data-mrsort-size');
+        if (orig) img.style.setProperty('--_size', orig);
+        else img.style.removeProperty('--_size');
+        img.removeAttribute('data-mrsort-size');
+      }
+    }
+    if (info) {
+      if (on) {
+        info.style.setProperty('align-items', 'flex-start', 'important');
+        info.style.setProperty('min-width', '0', 'important');
+        info.style.setProperty('overflow', 'hidden', 'important');
+      } else {
+        info.style.removeProperty('align-items');
+        info.style.removeProperty('min-width');
+        info.style.removeProperty('overflow');
+      }
+    }
+  }
+
+  // Compact descriptions expand on a deliberate hover only - the delay keeps
+  // a mouse passing across the list from making rows jump around.
+  var descTimer = null;
+  document.addEventListener('mouseover', function (e) {
+    if (!state.compact || !e.target || !e.target.closest) return;
+    var card = e.target.closest('.mrsort-compact-card');
+    if (!card) return;
+    if (card.classList.contains('mrsort-desc-open')) return;
+    clearTimeout(descTimer);
+    descTimer = setTimeout(function () { card.classList.add('mrsort-desc-open'); }, DESC_HOVER_MS);
+  }, true);
+  document.addEventListener('mouseout', function (e) {
+    if (!e.target || !e.target.closest) return;
+    var card = e.target.closest('.mrsort-compact-card');
+    if (!card) return;
+    var into = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.mrsort-compact-card') : null;
+    if (into === card) return; // still inside the same card
+    clearTimeout(descTimer);
+    card.classList.remove('mrsort-desc-open');
+  }, true);
 
   // -------------------------------------------------------- infinite scroll
 
@@ -1442,46 +1873,94 @@
   // the same toggle switch Modrinth's filters use
   function buildAutoPill() {
     if (state.autoPill) return state.autoPill;
-    var wrap = document.createElement('mrsort-pill-box');
-    wrap.className = 'mrsort-pill-wrap';
-    var pill = document.createElement('span');
-    pill.className = 'mrsort-pill';
-    pill.setAttribute('role', 'button');
-    pill.setAttribute('tabindex', '0');
-    pill.title = 'Load the next page of results as you scroll';
-    var label = document.createElement('span');
-    label.textContent = 'Auto-load';
-    var sw = document.createElement('span');
-    sw.className = 'mrsort-switch';
-    var knob = document.createElement('span');
-    knob.className = 'mrsort-switch-knob';
-    sw.appendChild(knob);
-    pill.appendChild(label);
-    pill.appendChild(sw);
-    wrap.appendChild(pill);
-    pill.addEventListener('click', function () { setAutoload(!state.scroll.enabled); });
-    pill.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAutoload(!state.scroll.enabled); }
-    });
+    var wrap = iconPill('mrsort-autopill', function () { setAutoload(!state.scroll.enabled); });
+    wrap.firstChild.title = 'Load the next page of results as you scroll';
+    wrap.firstChild.appendChild(icon(ICON.autoload, 20));
     state.autoPill = wrap;
     return wrap;
   }
 
-  // Prefers the toolbar; the bar checkbox is the fallback when Modrinth's
-  // toolbar is missing (layout change, odd page).
-  function ensureAutoPill() {
+  // icon-only pill for the toolbar, styled like the site's own
+  function iconPill(cls, onClick) {
+    var wrap = document.createElement('mrsort-pill-box');
+    wrap.className = 'mrsort-pill-wrap';
+    var pill = document.createElement('span');
+    pill.className = 'mrsort-pill mrsort-pill-icon ' + cls;
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.addEventListener('click', onClick);
+    pill.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
+    });
+    wrap.appendChild(pill);
+    return wrap;
+  }
+
+  function buildEyePill() {
+    if (state.eyePill) return state.eyePill;
+    var wrap = iconPill('mrsort-eyepill', function () {
+      state.reveal = !state.reveal;
+      store(REVEAL_KEY, state.reveal);
+      refresh();
+    });
+    var count = document.createElement('span');
+    count.className = 'mrsort-eye-count';
+    wrap.firstChild.appendChild(count);
+    state.eyePill = wrap;
+    return wrap;
+  }
+
+  function buildCompactPill() {
+    if (state.compactPill) return state.compactPill;
+    var wrap = iconPill('mrsort-compactpill', function () {
+      state.compact = !state.compact;
+      store(COMPACT_KEY, state.compact);
+      refresh();
+    });
+    wrap.firstChild.appendChild(icon(ICON.rows, 20));
+    state.compactPill = wrap;
+    return wrap;
+  }
+
+  // All three pills sit after the site's View pill: Auto-load, eye, compact.
+  // The bar controls are the fallback when Modrinth's toolbar is missing.
+  function ensureToolbarPills() {
     var row = canPaginate() ? toolbarSlot() : null;
-    var pill = buildAutoPill();
+    var auto = buildAutoPill();
+    var eye = buildEyePill();
+    var compact = buildCompactPill();
     if (!row) {
-      if (pill.parentElement) pill.parentElement.removeChild(pill);
+      [auto, eye, compact].forEach(function (p) {
+        if (p.parentElement) p.parentElement.removeChild(p);
+      });
       return false;
     }
-    if (pill.parentElement !== row) {
-      // after the View pill when present, otherwise at the row's end
-      var after = row.children.length > 1 ? row.children[1].nextSibling : null;
-      row.insertBefore(pill, after);
+    var anchor = row.children.length > 1 ? row.children[1] : row.lastElementChild;
+    [auto, eye, compact].forEach(function (p) {
+      if (p.parentElement !== row || p.previousElementSibling !== anchor) {
+        row.insertBefore(p, anchor.nextSibling);
+      }
+      anchor = p;
+    });
+
+    auto.firstChild.setAttribute('data-on', state.scroll.enabled ? '1' : '0');
+
+    var ep = eye.firstChild;
+    var on = state.reveal ? '1' : '0';
+    if (ep.getAttribute('data-on') !== on) {
+      ep.setAttribute('data-on', on);
+      var oi = ep.querySelector('svg');
+      if (oi) ep.removeChild(oi);
+      ep.insertBefore(icon(state.reveal ? ICON.eye : ICON.eyeOff, 20), ep.firstChild);
+      ep.title = state.reveal ? 'Hidden projects are shown - click to hide them again' : 'Show hidden projects';
     }
-    pill.firstChild.setAttribute('data-on', state.scroll.enabled ? '1' : '0');
+    var n = hiddenCount();
+    var cnt = ep.querySelector('.mrsort-eye-count');
+    if (cnt.textContent !== (n ? String(n) : '')) cnt.textContent = n ? String(n) : '';
+
+    var cp = compact.firstChild;
+    cp.setAttribute('data-on', state.compact ? '1' : '0');
+    cp.title = state.compact ? 'Normal cards' : 'Compact cards';
     return true;
   }
 
@@ -1650,9 +2129,21 @@
   var state = {
     list: null, bar: null, prefs: null, kind: null, ranks: null, run: 0,
     hidden: loadHidden(), reveal: load(REVEAL_KEY, false) === true, block: loadBlock(),
-    modlist: { names: {}, ids: {}, lines: 0, raw: '' },
+    modlist: { names: {}, ids: {}, cf: {}, stripped: {}, lines: 0, raw: '' },
     mlMode: (function (m) { return m === 'only' || m === 'badge' ? m : 'exclude'; })(load(MODLIST_MODE_KEY, 'exclude')),
-    mcver: String(load(MCVER_KEY, '') || ''), loader: String(load(LOADER_KEY, '') || ''),
+    stars: loadStars(),
+    dlMinC: (function (r) {
+      if (!r) return 0;
+      if (r.minC !== undefined) return +r.minC || 0;
+      return r.min > 0 ? Math.round(Math.pow(10, Math.min(+r.min, 80) / 10)) : 0; // old slider-position format
+    })(load(RANGE_KEY, null)),
+    dlMaxC: (function (r) {
+      if (!r) return 0;
+      if (r.maxC !== undefined) return +r.maxC || 0;
+      return r.max >= 0 && r.max < 80 ? Math.round(Math.pow(10, +r.max / 10)) : 0;
+    })(load(RANGE_KEY, null)),
+    compact: load(COMPACT_KEY, false) === true,
+    onlyHidden: false, updAvail: '',
     scroll: {
       enabled: load(AUTOLOAD_KEY, true) !== false,
       el: null, io: null, added: [],
@@ -1666,8 +2157,7 @@
   function readBar() {
     return {
       key: state.bar.querySelector('.mrsort-key').value,
-      dir: state.prefs.dir,
-      group: state.bar.querySelector('.mrsort-group').checked
+      dir: state.prefs.dir
     };
   }
 
@@ -1708,17 +2198,17 @@
     var serverHandled = state.kind === 'search' &&
       SERVER_SORT[prefs.key] && prefs.dir === -1 && currentServerSort() === SERVER_SORT[prefs.key];
 
-    var keyActive = prefs.key !== 'none' && !serverHandled;
+    var keyActive = prefs.key !== 'none' && !serverHandled && !state.siteSort;
     // with nothing to compute, hidden cards still need pushing to the bottom
-    var needsOrder = keyActive || prefs.group || (state.reveal && hiddenCount() > 0);
+    var needsOrder = keyActive || starActive() || (state.reveal && hiddenCount() > 0);
     // Sinking hidden cards only needs their slug, so project data is fetched
-    // only when a sort key, grouping or the compat filter actually requires it.
-    var needData = keyActive || prefs.group || compatActive();
+    // only when a sort key, grouping or a data-driven filter requires it.
+    var needData = keyActive || rangeActive();
 
     if (!needsOrder && !needData) {
       state.ranks = null;
       clearOrder(list);
-      list.cards.forEach(function (c) { c.el.classList.remove('mrsort-card-incompat'); });
+      list.cards.forEach(function (c) { c.el.classList.remove('mrsort-card-range'); });
       statusBits(serverHandled ? ['Sorted by Modrinth across all pages'] : []);
       return;
     }
@@ -1731,7 +2221,7 @@
       if (token !== state.run || state.list !== list) return;
 
       if (needsOrder) {
-        var sorted = sortCards(list.cards, data, prefs, keyActive, keyActive || prefs.group);
+        var sorted = sortCards(list.cards, data, prefs, keyActive, keyActive);
         applyOrder(list, sorted);
         // keyed by element, not slug: appended pages can repeat a project, and
         // two cards sharing a slug would otherwise get the same order stamp
@@ -1742,13 +2232,13 @@
         clearOrder(list);
       }
 
-      // compat dimming - marks cards, never reorders them
-      var incompat = 0;
+      // download-range dimming - marks cards, never reorders them
+      var outRange = 0;
       list.cards.forEach(function (c) {
         var d = data[c.slug];
-        var bad = compatActive() && d ? !isCompat(derive(d)) : false;
-        if (bad && !cardHidden(c)) incompat++;
-        c.el.classList.toggle('mrsort-card-incompat', bad);
+        var out = rangeActive() && d ? !inRange(d.downloads || 0) : false;
+        if (out && !cardHidden(c)) outRange++;
+        c.el.classList.toggle('mrsort-card-range', out);
       });
 
       var visibleN = list.cards.filter(function (c) { return !cardHidden(c); }).length;
@@ -1757,10 +2247,9 @@
       var pageOnly = state.kind === 'search' && keyActive;
       var bits = [];
       if (keyActive) bits.push('Sorted ' + (visibleN - missing));
-      else if (prefs.group) bits.push('Grouped ' + visibleN);
       if (serverHandled) bits.push('key handled by Modrinth');
       if (missing) bits.push(missing + ' unresolved');
-      if (incompat) bits.push(incompat + ' incompatible');
+      if (outRange) bits.push(outRange + ' filtered by downloads');
       if (pageOnly) bits.push('this page only');
       statusBits(bits, pageOnly);
     }).catch(function (err) {
@@ -1796,7 +2285,7 @@
   // route, so none of them sit inside a container Vue is about to patch.
   function teardown() {
     if (state.depsTip) state.depsTip.style.display = 'none';
-    [state.bar, state.filterCard, state.modlistCard, state.autoPill, state.scroll.el].forEach(function (el) {
+    [state.bar, state.filterCard, state.modlistCard, state.rangeCard, state.onlyCard, state.autoPill, state.eyePill, state.compactPill, state.scroll.el].forEach(function (el) {
       if (el && el.parentElement) el.parentElement.removeChild(el);
     });
     // any imported card, including ones our bookkeeping lost track of
@@ -1820,7 +2309,7 @@
     if (sameList(found, state.list)) {
       ensureBar(state.list);
       ensureSentinel(state.list);
-      ensureAutoPill(); // Vue re-renders can rebuild the toolbar and orphan the pill
+      ensureToolbarPills(); // Vue re-renders can rebuild the toolbar and orphan the pills
       ensureFilterHost();
       reapply();
       return;
@@ -1840,7 +2329,7 @@
       var s = currentServerSort();
       if (s) {
         for (var id in SERVER_SORT) {
-          if (SERVER_SORT[id] === s) { state.prefs = { key: id, dir: -1, group: state.prefs.group }; break; }
+          if (SERVER_SORT[id] === s) { state.prefs = { key: id, dir: -1 }; break; }
         }
       }
     }
@@ -1872,7 +2361,7 @@
   // scan -> decorate() spins several times a second forever.
   function ourNode(n) {
     return !!(n && n.nodeType === 1 && n.closest &&
-      n.closest('.mrsort,.mrsort-hide,.mrsort-sentinel,.mrsort-tip,.mrsort-depbtn'));
+      n.closest('.mrsort,.mrsort-hide,.mrsort-sentinel,.mrsort-tip,.mrsort-depbtn,.mrsort-star'));
   }
 
   new MutationObserver(function (records) {
@@ -1893,4 +2382,5 @@
   }, 400);
   scrollReset();
   scheduleScan(0);
+  checkUpdate();
 })();
