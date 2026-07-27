@@ -19,6 +19,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | [Scrap.TF: Hide Entered Raffles](https://raw.githubusercontent.com/ceeprus/userscript/main/scraptf/scraptf-hide-entered.user.js) | Hides already-entered raffles on Scrap.TF raffle lists, with an eye toggle button next to Create Raffle. |
 | [FFXIV Language Redirect](https://raw.githubusercontent.com/ceeprus/userscript/main/ffxiv/ffxiv-redirect.user.js) | Redirects any regional FFXIV site (DE/FR/EU/JP, etc.) to the NA version. |
 | [GitHub Commit Email Revealer](https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js) | Shows all commit author emails in a popup next to "Browse Files", with a live status indicator. |
+| [Modrinth Plus](https://raw.githubusercontent.com/ceeprus/userscript/main/modrinth/modrinth-list-sort.user.js) | Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results. |
 
 ## Steam Inventory Augmentor — backpack.tf key
 
