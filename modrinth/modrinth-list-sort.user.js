@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.0
+// @version      1.1
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -25,6 +25,12 @@
   var AUTOLOAD_KEY = 'mrsort-autoload';
   var BLOCK_KEY = 'mrsort-blocklist';
   var MODLIST_KEY = 'mrsort-modlist';
+  var MODLIST_MODE_KEY = 'mrsort-modlist-mode'; // exclude | only | badge
+  var MCVER_KEY = 'mrsort-mcver';
+  var LOADER_KEY = 'mrsort-loader';
+  var DEPS_KEY = 'mrsort-deps';
+
+  var LOADERS = ['fabric', 'forge', 'neoforge', 'quilt'];
   // sorted cards get order 1..N, so anything not yet ranked must sit above N,
   // not at the CSS default of 0 (which would float it to the top of the list)
   var UNRANKED_ORDER = 100000;
@@ -59,7 +65,8 @@
   var SVG_NS = 'http://www.w3.org/2000/svg';
   var ICON = {
     eye: ['M2.036 12.322a1 1 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178a1 1 0 0 1 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178Z', 'M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z'],
-    eyeOff: ['M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.774 3.162 10.066 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243']
+    eyeOff: ['M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.774 3.162 10.066 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243'],
+    deps: ['M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z']
   };
 
   function icon(paths, size) {
@@ -268,20 +275,51 @@
     for (var i = 0; i < state.block.length; i++) {
       if (name.indexOf(state.block[i]) > -1) return state.block[i];
     }
-    // modlist entries match the whole name, not a substring: a 500-mod list
-    // full of short names would otherwise hide half the site
-    var ml = state.modlist;
-    if (ml.ids[card.slug.toLowerCase()]) return 'modlist';
-    if (card.title) {
-      // full title first, then the title with its own parenthetical stripped -
-      // "oωo (owo-lib)" must match a list line that says just "oωo"
-      if (ml.names[normName(card.title)]) return 'modlist';
-      if (ml.names[baseName(card.title)]) return 'modlist';
-    }
     return null;
   }
 
-  function cardHidden(card) { return isHidden(card.slug) || !!blockedBy(card); }
+  // Modlist entries match the whole name, not a substring: a 500-mod list
+  // full of short names would otherwise hide half the site.
+  function inModlist(card) {
+    var ml = state.modlist;
+    if (ml.ids[card.slug.toLowerCase()]) return true;
+    if (card.title) {
+      // full title first, then the title with its own parenthetical stripped -
+      // "oωo (owo-lib)" must match a list line that says just "oωo"
+      if (ml.names[normName(card.title)]) return true;
+      if (ml.names[baseName(card.title)]) return true;
+    }
+    return false;
+  }
+
+  // Why a card is hidden: 'manual' (its eye), a blacklist term, 'modlist'
+  // (exclude mode), or 'not-in-modlist' (only-show mode). Null = visible.
+  function hideReason(card) {
+    if (isHidden(card.slug)) return 'manual';
+    var term = blockedBy(card);
+    if (term) return term;
+    if (state.mlMode === 'exclude' && inModlist(card)) return 'modlist';
+    if (state.mlMode === 'only' && modlistSize() > 0 && !inModlist(card)) return 'not-in-modlist';
+    return null;
+  }
+
+  function cardHidden(card) { return !!hideReason(card); }
+
+  // ---- compat filter: dim projects that don't run on the chosen setup ------
+
+  function compatActive() { return !!(state.mcver || state.loader); }
+
+  // Loader check only judges projects that declare a real mod loader:
+  // resource packs ("minecraft"), datapacks, shaders pass through untouched.
+  function isCompat(p) {
+    if (!p) return true; // unknown stays undimmed
+    if (state.mcver && p.game_versions.length && p.game_versions.indexOf(state.mcver) < 0) return false;
+    if (state.loader && p.loaders.length) {
+      var declares = p.loaders.some(function (l) { return LOADERS.indexOf(l) > -1; });
+      if (declares && p.loaders.indexOf(state.loader) < 0) return false;
+    }
+    return true;
+  }
 
   function counts() {
     var out = { manual: 0, filtered: 0, total: 0 };
@@ -309,7 +347,8 @@
       published: p.published || null,
       updated: p.updated || null,
       project_type: p.project_type || '',
-      game_versions: p.game_versions || []
+      game_versions: p.game_versions || [],
+      loaders: p.loaders || []
     };
   }
 
@@ -321,7 +360,9 @@
       project_type: d.project_type,
       publishedMs: d.published ? Date.parse(d.published) : 0,
       updatedMs: d.updated ? Date.parse(d.updated) : 0,
-      verRank: verRank(d.game_versions)
+      verRank: verRank(d.game_versions),
+      game_versions: d.game_versions || [],
+      loaders: d.loaders || []
     };
     var days = Math.max(1, (Date.now() - p.publishedMs) / 86400000);
     p.perDay = p.publishedMs ? p.downloads / days : 0;
@@ -397,7 +438,7 @@
     try { u = new URL(a.getAttribute('href'), location.origin); } catch (e) { return null; }
     if (u.host !== location.host) return null;
     var m = u.pathname.match(PATH_RE);
-    return m ? m[2] : null;
+    return m ? { type: m[1], slug: m[2] } : null;
   }
 
   // Read off the card itself, so the blacklist can filter before (or without)
@@ -414,8 +455,8 @@
     var all = root.querySelectorAll('a[href]');
     var anchors = [];
     for (var i = 0; i < all.length; i++) {
-      var slug = slugOf(all[i]);
-      if (slug) anchors.push({ a: all[i], slug: slug });
+      var hit = slugOf(all[i]);
+      if (hit) anchors.push({ a: all[i], slug: hit.slug, type: hit.type });
     }
     if (anchors.length < 2) return null;
 
@@ -426,7 +467,7 @@
         var par = el.parentElement;
         var g = groups.get(par);
         if (!g) { g = new Map(); groups.set(par, g); }
-        if (!g.has(el)) g.set(el, anchors[j].slug);
+        if (!g.has(el)) g.set(el, anchors[j]);
         el = par;
       }
     }
@@ -443,7 +484,7 @@
     var kids = best.container.children;
     for (var k = 0; k < kids.length; k++) {
       var s = best.map.get(kids[k]);
-      if (s) cards.push({ el: kids[k], slug: s, title: titleOf(kids[k]), index: cards.length });
+      if (s) cards.push({ el: kids[k], slug: s.slug, type: s.type, title: titleOf(kids[k]), index: cards.length });
     }
     // Real card lists only - loose project links scattered through a page
     // (a project's own nav, "related projects") don't qualify.
@@ -554,6 +595,14 @@
     // tag, so these elements can never be adopted.
     'mrsort-bar,mrsort-card,mrsort-sentinel-box{display:block}',
     'mrsort-pill-box{display:inline-block}',
+    'mrsort-tip{display:none;position:absolute;z-index:9999;min-width:180px;max-width:260px;background:var(--color-raised-bg,#27292e);color:var(--color-base,#b0bac5);border:1px solid var(--color-button-bg,#34363c);border-radius:.75rem;padding:.5rem .75rem;font-size:.8125rem;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.35)}',
+    '.mrsort-tip-head{font-weight:600;color:var(--color-contrast,#fff)}',
+    '.mrsort-card-incompat{opacity:.4;filter:grayscale(.5)}',
+    '.mrsort-depbtn{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease}',
+    '.mrsort-depbtn:hover{opacity:1;color:var(--color-brand,#1bd96a)}',
+    '.mrsort-depbtn svg{pointer-events:none}',
+    '.mrsort-owned{display:inline-flex;align-items:center;justify-content:center;width:1.15rem;height:1.15rem;border-radius:9999px;background:var(--color-brand,#1bd96a);color:var(--color-accent-contrast,#04180f);font-size:.75rem;font-weight:700;pointer-events:none}',
+    '.mrsort-mlmodes label{display:flex;align-items:center;gap:.25rem;font-size:.8125rem;cursor:pointer}',
     '.mrsort{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .75rem;font-size:.875rem;color:var(--color-base,#b0bac5)}',
     // matches Modrinth's own dropdown pills: #34363c, 12px radius, 8x16 pad, 600 weight
     '.mrsort select,.mrsort button{background:var(--color-button-bg,#34363c);color:var(--color-button-text,#b0bac5);border:1px solid var(--color-button-border,transparent);border-radius:.75rem;padding:.5rem 1rem;font:inherit;font-weight:600;line-height:1.25;cursor:pointer;transition:filter .2s}',
@@ -643,6 +692,33 @@
     groupWrap.appendChild(group);
     groupWrap.appendChild(document.createTextNode('Group by type'));
 
+    var mcver = document.createElement('select');
+    mcver.className = 'mrsort-mcver';
+    mcver.title = 'Dim projects that don\'t support this Minecraft version';
+    var loader = document.createElement('select');
+    loader.className = 'mrsort-loader';
+    loader.title = 'Dim projects that don\'t support this loader';
+    var lo = document.createElement('option');
+    lo.value = '';
+    lo.textContent = 'Any loader';
+    loader.appendChild(lo);
+    LOADERS.forEach(function (l) {
+      var o = document.createElement('option');
+      o.value = l;
+      o.textContent = l.charAt(0).toUpperCase() + l.slice(1);
+      loader.appendChild(o);
+    });
+    mcver.addEventListener('change', function () {
+      state.mcver = mcver.value;
+      store(MCVER_KEY, state.mcver);
+      refresh();
+    });
+    loader.addEventListener('change', function () {
+      state.loader = loader.value;
+      store(LOADER_KEY, state.loader);
+      refresh();
+    });
+
     var autoWrap = document.createElement('label');
     autoWrap.className = 'mrsort-auto';
     var auto = document.createElement('input');
@@ -672,6 +748,8 @@
     bar.appendChild(label);
     bar.appendChild(select);
     bar.appendChild(dir);
+    bar.appendChild(mcver);
+    bar.appendChild(loader);
     bar.appendChild(groupWrap);
     bar.appendChild(autoWrap);
     bar.appendChild(eye);
@@ -734,6 +812,9 @@
 
     state.bar.querySelector('.mrsort-unhide-all').style.display =
       (state.reveal && Object.keys(state.hidden).length) ? '' : 'none';
+
+    paintMcver();
+    state.bar.querySelector('.mrsort-loader').value = state.loader;
 
     // the toolbar pill replaces the bar checkbox whenever the toolbar exists
     var pillPlaced = ensureAutoPill();
@@ -819,8 +900,64 @@
     apply.addEventListener('click', function () { setModlist(area.value); refresh(); });
     clear.addEventListener('click', function () { area.value = ''; setModlist(''); refresh(); });
 
+    // what the matched entries do: hidden, the only ones shown, or badged
+    var modes = document.createElement('div');
+    modes.className = 'mrsort-modlist-row mrsort-mlmodes';
+    [['exclude', 'Exclude'], ['only', 'Only show'], ['badge', 'Badge']].forEach(function (m) {
+      var lab = document.createElement('label');
+      var r = document.createElement('input');
+      r.type = 'radio';
+      r.name = 'mrsort-mlmode';
+      r.value = m[0];
+      r.addEventListener('change', function () {
+        if (!r.checked) return;
+        state.mlMode = m[0];
+        store(MODLIST_MODE_KEY, m[0]);
+        refresh();
+      });
+      lab.appendChild(r);
+      lab.appendChild(document.createTextNode(m[1]));
+      modes.appendChild(lab);
+    });
+
+    // page export + settings backup/restore
+    var tools = document.createElement('div');
+    tools.className = 'mrsort-modlist-row';
+    var copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'mrsort-btn';
+    copy.textContent = 'Copy page list';
+    copy.title = 'Copy every visible project on this page as a modlist';
+    copy.addEventListener('click', function () { exportPageList(note); });
+    var backup = document.createElement('button');
+    backup.type = 'button';
+    backup.className = 'mrsort-btn';
+    backup.textContent = 'Backup';
+    backup.title = 'Download all Modrinth Plus settings as a file';
+    backup.addEventListener('click', exportSettings);
+    var restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'mrsort-btn';
+    restore.textContent = 'Restore';
+    restore.title = 'Load settings from a backup file';
+    var file = document.createElement('input');
+    file.type = 'file';
+    file.accept = '.json,application/json';
+    file.style.display = 'none';
+    restore.addEventListener('click', function () { file.click(); });
+    file.addEventListener('change', function () {
+      if (file.files && file.files[0]) importSettings(file.files[0], note);
+      file.value = '';
+    });
+    tools.appendChild(copy);
+    tools.appendChild(backup);
+    tools.appendChild(restore);
+    tools.appendChild(file);
+
     wrap.appendChild(area);
     wrap.appendChild(row);
+    wrap.appendChild(modes);
+    wrap.appendChild(tools);
     state.modlistEl = wrap;
     state.modlistNote = note;
     state.modlistArea = area;
@@ -831,6 +968,76 @@
     if (!state.modlistNote) return;
     var n = modlistSize();
     state.modlistNote.textContent = n ? n + ' entries active' : '';
+    if (state.modlistEl) {
+      var r = state.modlistEl.querySelector('input[name=mrsort-mlmode][value="' + state.mlMode + '"]');
+      if (r && !r.checked) r.checked = true;
+    }
+  }
+
+  // ---- export / backup -----------------------------------------------------
+
+  function downloadText(name, text, mime) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: mime || 'text/plain' }));
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+
+  // Visible cards only, in current visual order, in the same format the
+  // excluder parses - one collection can feed another's modlist.
+  function exportPageList(note) {
+    if (!state.list) return;
+    var rows = state.list.cards
+      .filter(function (c) { return !cardHidden(c); })
+      .sort(function (a, b) { return (+a.el.style.order || 0) - (+b.el.style.order || 0); })
+      .map(function (c) { return (c.title || c.slug) + ' (https://modrinth.com/' + c.type + '/' + c.slug + ')'; });
+    var text = rows.join('\n');
+    var done = function () { if (note) note.textContent = 'Copied ' + rows.length + ' projects'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { downloadText('modrinth-list.txt', text); done(); });
+    } else {
+      downloadText('modrinth-list.txt', text);
+      done();
+    }
+  }
+
+  var SETTINGS_KEYS = [PREF_KEY, HIDE_KEY, REVEAL_KEY, AUTOLOAD_KEY, BLOCK_KEY, MODLIST_KEY, MODLIST_MODE_KEY, MCVER_KEY, LOADER_KEY];
+
+  function exportSettings() {
+    var out = { app: 'modrinth-plus', version: 1 };
+    SETTINGS_KEYS.forEach(function (k) { out[k] = load(k, null); });
+    downloadText('modrinth-plus-settings.json', JSON.stringify(out, null, 2), 'application/json');
+  }
+
+  function importSettings(file, note) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var data;
+      try { data = JSON.parse(String(reader.result)); } catch (e) { data = null; }
+      if (!data || data.app !== 'modrinth-plus') {
+        if (note) note.textContent = 'Not a Modrinth Plus backup';
+        return;
+      }
+      SETTINGS_KEYS.forEach(function (k) {
+        if (data[k] !== null && data[k] !== undefined) store(k, data[k]);
+      });
+      // reload every piece of state the file can carry
+      state.hidden = loadHidden();
+      state.block = loadBlock();
+      state.modlist = loadModlist();
+      state.reveal = load(REVEAL_KEY, false) === true;
+      state.mlMode = (function (m) { return m === 'only' || m === 'badge' ? m : 'exclude'; })(load(MODLIST_MODE_KEY, 'exclude'));
+      state.mcver = String(load(MCVER_KEY, '') || '');
+      state.loader = String(load(LOADER_KEY, '') || '');
+      state.scroll.enabled = load(AUTOLOAD_KEY, true) !== false;
+      state.prefs = getPrefs(state.kind);
+      if (state.modlistArea) state.modlistArea.value = state.modlist.raw || '';
+      resolveModlist();
+      if (note) note.textContent = 'Settings restored';
+      refresh();
+    };
+    reader.readAsText(file);
   }
 
   // The filter sidebar's own cards, so ours can sit among them
@@ -943,6 +1150,41 @@
     });
   }
 
+  // Version dropdown fills from the versions the current cards actually
+  // declare (release-shaped only), so it never lists snapshots or versions
+  // nothing on the page supports. Rebuilt only when that set changes.
+  function paintMcver() {
+    var sel = state.bar.querySelector('.mrsort-mcver');
+    var vers = {};
+    if (state.mcver) vers[state.mcver] = 1;
+    if (state.list) {
+      var cache = loadCache();
+      state.list.cards.forEach(function (c) {
+        var hit = cache[c.slug.toLowerCase()];
+        var gv = hit && hit.d && hit.d.game_versions || [];
+        for (var i = 0; i < gv.length; i++) if (/^\d+(\.\d+)*$/.test(gv[i])) vers[gv[i]] = 1;
+      });
+    }
+    var sorted = Object.keys(vers).sort(function (a, b) { return verRank([b]) - verRank([a]); });
+    var key = sorted.join(',');
+    if (sel.getAttribute('data-vers') !== key) {
+      sel.setAttribute('data-vers', key);
+      sel.textContent = '';
+      var any = document.createElement('option');
+      any.value = '';
+      any.textContent = 'Any MC version';
+      sel.appendChild(any);
+      sorted.forEach(function (v) {
+        var o = document.createElement('option');
+        o.value = v;
+        o.textContent = v;
+        sel.appendChild(o);
+      });
+    }
+    sel.value = state.mcver;
+    if (sel.value !== state.mcver) sel.value = ''; // stored version absent from this page
+  }
+
   function setStatus(text, warn) {
     if (!state.bar) return;
     var el = state.bar.querySelector('.mrsort-status');
@@ -1034,21 +1276,127 @@
 
       // Idempotent: touching the DOM here feeds our own MutationObserver, so
       // the icon is rebuilt only when this card's hidden state actually flips.
-      var term = blockedBy(c);
-      var manual = isHidden(c.slug);
-      var flag = (manual ? '1' : '0') + (term ? '|' + term : '');
-      if (btn.getAttribute('data-hidden') !== flag) {
-        btn.setAttribute('data-hidden', flag);
-        // A filter term outranks the per-card toggle, so say so rather than
+      var reason = hideReason(c);
+      var manual = reason === 'manual';
+      if (btn.getAttribute('data-hidden') !== String(reason)) {
+        btn.setAttribute('data-hidden', String(reason));
+        // A filter outranks the per-card toggle, so say so rather than
         // offering a button that visibly does nothing.
-        btn.disabled = !!term;
-        btn.title = term === 'modlist' ? 'Hidden by your modlist'
-          : term ? 'Hidden by filter "' + term + '"'
-            : (manual ? 'Unhide this project' : 'Hide this project');
+        btn.disabled = !!reason && !manual;
+        btn.title = reason === 'modlist' ? 'Hidden by your modlist'
+          : reason === 'not-in-modlist' ? 'Hidden: not in your modlist (only-show mode)'
+            : reason && !manual ? 'Hidden by filter "' + reason + '"'
+              : (manual ? 'Unhide this project' : 'Hide this project');
         btn.textContent = '';
-        btn.appendChild(icon((manual || term) ? ICON.eye : ICON.eyeOff));
+        btn.appendChild(icon(reason ? ICON.eye : ICON.eyeOff));
+      }
+
+      // deps button, before the hide button
+      var dbtn = c.el.querySelector('.mrsort-depbtn');
+      if (!dbtn) {
+        dbtn = document.createElement('button');
+        dbtn.type = 'button';
+        dbtn.className = 'mrsort-depbtn';
+        dbtn.classList.add('smart-clickable:allow-pointer-events');
+        dbtn.title = 'Show dependencies';
+        dbtn.appendChild(icon(ICON.deps));
+        dbtn.addEventListener('mouseenter', function () { depsShow(dbtn); });
+        dbtn.addEventListener('mouseleave', depsHideSoon);
+        dbtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); depsShow(dbtn); });
+        btn.parentElement.insertBefore(dbtn, btn);
+      }
+      if (dbtn.getAttribute('data-slug') !== c.slug) dbtn.setAttribute('data-slug', c.slug);
+
+      // "in your modlist" badge (badge mode only)
+      var owned = state.mlMode === 'badge' && inModlist(c);
+      var chip = c.el.querySelector('.mrsort-owned');
+      if (owned && !chip) {
+        chip = document.createElement('span');
+        chip.className = 'mrsort-owned';
+        chip.textContent = '✓';
+        chip.title = 'In your modlist';
+        btn.parentElement.insertBefore(chip, dbtn);
+      } else if (!owned && chip) {
+        chip.parentElement.removeChild(chip);
       }
     });
+  }
+
+  // ---- dependency tooltip --------------------------------------------------
+
+  var depsTimer = null;
+
+  function depsTip() {
+    if (!state.depsTip) {
+      var tip = document.createElement('mrsort-tip');
+      tip.className = 'mrsort-tip';
+      tip.addEventListener('mouseenter', function () { clearTimeout(depsTimer); });
+      tip.addEventListener('mouseleave', depsHideSoon);
+      document.body.appendChild(tip);
+      state.depsTip = tip;
+    }
+    return state.depsTip;
+  }
+
+  function depsHideSoon() {
+    clearTimeout(depsTimer);
+    depsTimer = setTimeout(function () {
+      if (state.depsTip) state.depsTip.style.display = 'none';
+    }, 250);
+  }
+
+  function depsShow(btn) {
+    clearTimeout(depsTimer);
+    var slug = btn.getAttribute('data-slug');
+    if (!slug) return;
+    var tip = depsTip();
+    var r = btn.getBoundingClientRect();
+    tip.style.display = 'block';
+    tip.style.left = Math.max(8, Math.min(window.innerWidth - 280, r.left - 240)) + 'px';
+    tip.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    tip.setAttribute('data-slug', slug);
+    tip.textContent = 'Loading dependencies…';
+
+    var cache = load(DEPS_KEY, {}) || {};
+    var hit = cache[slug];
+    if (hit && Date.now() - hit.t < TTL) { depsRender(tip, slug, hit.list); return; }
+
+    fetch(API + '/project/' + encodeURIComponent(slug) + '/dependencies', { headers: { Accept: 'application/json' } })
+      .then(function (r2) { if (!r2.ok) throw new Error('HTTP ' + r2.status); return r2.json(); })
+      .then(function (d) {
+        var list = (d.projects || []).map(function (p) { return p.title || p.slug; }).filter(Boolean);
+        cache = load(DEPS_KEY, {}) || {};
+        cache[slug] = { t: Date.now(), list: list };
+        var keys = Object.keys(cache);
+        if (keys.length > 200) {
+          keys.sort(function (a, b) { return (cache[a].t || 0) - (cache[b].t || 0); });
+          for (var i = 0; i < keys.length - 200; i++) delete cache[keys[i]];
+        }
+        store(DEPS_KEY, cache);
+        if (tip.getAttribute('data-slug') === slug) depsRender(tip, slug, list);
+      })
+      .catch(function () {
+        if (tip.getAttribute('data-slug') === slug) tip.textContent = 'Could not load dependencies';
+      });
+  }
+
+  function depsRender(tip, slug, list) {
+    tip.textContent = '';
+    var head = document.createElement('div');
+    head.className = 'mrsort-tip-head';
+    head.textContent = list.length ? 'Dependencies (' + list.length + ')' : 'No dependencies';
+    tip.appendChild(head);
+    list.slice(0, 10).forEach(function (name) {
+      var row = document.createElement('div');
+      row.textContent = name;
+      tip.appendChild(row);
+    });
+    if (list.length > 10) {
+      var more = document.createElement('div');
+      more.className = 'mrsort-tip-head';
+      more.textContent = '+' + (list.length - 10) + ' more';
+      tip.appendChild(more);
+    }
   }
 
   function applyVisibility() {
@@ -1303,6 +1651,8 @@
     list: null, bar: null, prefs: null, kind: null, ranks: null, run: 0,
     hidden: loadHidden(), reveal: load(REVEAL_KEY, false) === true, block: loadBlock(),
     modlist: { names: {}, ids: {}, lines: 0, raw: '' },
+    mlMode: (function (m) { return m === 'only' || m === 'badge' ? m : 'exclude'; })(load(MODLIST_MODE_KEY, 'exclude')),
+    mcver: String(load(MCVER_KEY, '') || ''), loader: String(load(LOADER_KEY, '') || ''),
     scroll: {
       enabled: load(AUTOLOAD_KEY, true) !== false,
       el: null, io: null, added: [],
@@ -1361,17 +1711,18 @@
     var keyActive = prefs.key !== 'none' && !serverHandled;
     // with nothing to compute, hidden cards still need pushing to the bottom
     var needsOrder = keyActive || prefs.group || (state.reveal && hiddenCount() > 0);
+    // Sinking hidden cards only needs their slug, so project data is fetched
+    // only when a sort key, grouping or the compat filter actually requires it.
+    var needData = keyActive || prefs.group || compatActive();
 
-    if (!needsOrder) {
+    if (!needsOrder && !needData) {
       state.ranks = null;
       clearOrder(list);
+      list.cards.forEach(function (c) { c.el.classList.remove('mrsort-card-incompat'); });
       statusBits(serverHandled ? ['Sorted by Modrinth across all pages'] : []);
       return;
     }
 
-    // Sinking hidden cards only needs their slug, so project data is fetched
-    // only when a sort key or grouping actually requires it.
-    var needData = keyActive || prefs.group;
     var slugs = list.cards.map(function (c) { return c.slug; });
 
     if (needData) setStatus('Loading…');
@@ -1379,22 +1730,37 @@
     ready.then(function (data) {
       if (token !== state.run || state.list !== list) return;
 
-      var sorted = sortCards(list.cards, data, prefs, keyActive, needData);
-      applyOrder(list, sorted);
+      if (needsOrder) {
+        var sorted = sortCards(list.cards, data, prefs, keyActive, keyActive || prefs.group);
+        applyOrder(list, sorted);
+        // keyed by element, not slug: appended pages can repeat a project, and
+        // two cards sharing a slug would otherwise get the same order stamp
+        state.ranks = new Map();
+        sorted.forEach(function (item, i) { state.ranks.set(item.el, i + 1); });
+      } else {
+        state.ranks = null;
+        clearOrder(list);
+      }
 
-      // keyed by element, not slug: appended pages can repeat a project, and
-      // two cards sharing a slug would otherwise get the same order stamp
-      state.ranks = new Map();
-      sorted.forEach(function (item, i) { state.ranks.set(item.el, i + 1); });
+      // compat dimming - marks cards, never reorders them
+      var incompat = 0;
+      list.cards.forEach(function (c) {
+        var d = data[c.slug];
+        var bad = compatActive() && d ? !isCompat(derive(d)) : false;
+        if (bad && !cardHidden(c)) incompat++;
+        c.el.classList.toggle('mrsort-card-incompat', bad);
+      });
 
-      var visible = sorted.filter(function (e) { return !e.hidden; });
-      var missing = visible.filter(function (e) { return e.missing; }).length;
+      var visibleN = list.cards.filter(function (c) { return !cardHidden(c); }).length;
+      var missing = 0;
+      if (keyActive) list.cards.forEach(function (c) { if (!data[c.slug] && !cardHidden(c)) missing++; });
       var pageOnly = state.kind === 'search' && keyActive;
       var bits = [];
-      if (keyActive) bits.push('Sorted ' + (visible.length - missing));
-      else if (prefs.group) bits.push('Grouped ' + visible.length);
+      if (keyActive) bits.push('Sorted ' + (visibleN - missing));
+      else if (prefs.group) bits.push('Grouped ' + visibleN);
       if (serverHandled) bits.push('key handled by Modrinth');
       if (missing) bits.push(missing + ' unresolved');
+      if (incompat) bits.push(incompat + ' incompatible');
       if (pageOnly) bits.push('this page only');
       statusBits(bits, pageOnly);
     }).catch(function (err) {
@@ -1429,6 +1795,7 @@
   // Pull every node of ours out of the page before Vue renders a different
   // route, so none of them sit inside a container Vue is about to patch.
   function teardown() {
+    if (state.depsTip) state.depsTip.style.display = 'none';
     [state.bar, state.filterCard, state.modlistCard, state.autoPill, state.scroll.el].forEach(function (el) {
       if (el && el.parentElement) el.parentElement.removeChild(el);
     });
@@ -1505,7 +1872,7 @@
   // scan -> decorate() spins several times a second forever.
   function ourNode(n) {
     return !!(n && n.nodeType === 1 && n.closest &&
-      n.closest('.mrsort,.mrsort-hide,.mrsort-sentinel'));
+      n.closest('.mrsort,.mrsort-hide,.mrsort-sentinel,.mrsort-tip,.mrsort-depbtn'));
   }
 
   new MutationObserver(function (records) {
