@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.6
-// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, hover popups), and a line under the description in expanded sale widgets.
+// @version      2.7
+// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -199,14 +199,32 @@
     // before any container that also holds other games — that keeps carousel slides safe
     // (e.g. the upcoming-releases calendar slide holds several different games).
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget]';
+    const CALENDAR_PAGE = location.pathname.startsWith('/personalcalendar');
     function hideTarget(el, kind, id) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
+            if (CALENDAR_PAGE && labelChild(n, t)) break;
             t = n;
         }
         return t;
+    }
+
+    // On the personal calendar a day cell is just <date label> + <games list>, so when the day's
+    // only game discloses AI nothing in the cell references another app and growth swallows the
+    // whole cell, date included — the vanished cell then shifts the week grid. Stop before any
+    // ancestor whose other direct children show text without referencing an app (the date label).
+    // Calendar-only: on sale pages a card's title/description are exactly such siblings, and
+    // there the whole card *should* hide.
+    function labelChild(n, from) {
+        for (const c of n.children) {
+            if (c === from || c.classList.contains('sgai_cap')) continue;
+            if (!c.textContent.trim()) continue;
+            if (c.matches('a[href*="/app/"], [data-ds-appid]') || c.querySelector('a[href*="/app/"], [data-ds-appid]')) continue;
+            return true;
+        }
+        return false;
     }
 
     // Does this container reference any app other than `id`?
