@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.00
+// @version      1.10
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
-// @description  Hides worlds you never want to see again from the VRChat website, with an eye toggle button next to the friends list.
+// @description  Hides worlds you never want to see again from the VRChat website. Marks hidden worlds in the lists and on the world page, with an eye toggle button next to the friends list.
 // @author       ceeprus
 // @match        https://vrchat.com/home*
 // @match        https://*.vrchat.com/home*
@@ -23,6 +23,9 @@
 
 const REGEX_WORLD_ID = /\/home\/world\/(wrld_[0-9a-f-]{36})/iu;
 const WORLD_LINK_SELECTOR = 'a[href*="/home/world/wrld_"]';
+const WORLD_INFO_SELECTOR = '[role="region"][aria-label="World Info"]';
+const LAUNCH_SELECTOR = 'button[aria-label="Launch"]';
+const OWN_SELECTOR = '.VRCWH-BTN, .VRCWH-FAB, .VRCWH-BADGE, .VRCWH-PAGE-BTN';
 const HEADING_SELECTOR = 'h1, h2, h3, h4';
 const TITLE_HEADING_SELECTOR = 'h1, h2, h3';
 // `:scope` binds only to the compound it sits in, so ':scope > h1, h2' would
@@ -107,6 +110,54 @@ const MAX_CLIMB = 10;
 }
 
 .VRCWH-ROW-EMPTY { display: none !important }
+
+.VRCWH-BADGE {
+	align-items: center;
+	background: #8f2f2f;
+	border-radius: 4px;
+	color: #fff;
+	display: inline-flex;
+	flex: none;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .04em;
+	line-height: 1;
+	margin-left: 6px;
+	padding: 3px 5px;
+	text-transform: uppercase;
+	vertical-align: middle;
+	white-space: nowrap;
+}
+
+.VRCWH-PAGE-BTN {
+	align-items: center;
+	align-self: flex-start;
+	background: #07242b;
+	border: 2px solid #053c48;
+	border-radius: 4px;
+	color: #fff;
+	cursor: pointer;
+	display: inline-flex;
+	font-size: 1rem;
+	gap: 8px;
+	margin-top: 8px;
+	padding: 5px 12px;
+	transition: .1s ease-in;
+}
+
+.VRCWH-PAGE-BTN:hover { background: #05191d }
+
+.VRCWH-PAGE-BTN.VRCWH-BTN-ON {
+	background: rgba(74, 12, 12, .9);
+	border-color: #8f2f2f;
+	color: #ff9d9d;
+}
+
+.VRCWH-PAGE-BTN svg { height: 16px; width: 16px }
+
+/* The Launch button themes itself off this variable, so recolouring it here
+   keeps VRChat's own hover and contrast rules intact. */
+.VRCWH-LAUNCH-HIDDEN { --profile-button-color: #8f2f2f }
 
 .VRCWH-CARD { position: relative }
 
@@ -360,15 +411,53 @@ const MAX_CLIMB = 10;
 		return null;
 	};
 
-	// Title is the first text in the card, ahead of the player count and
+	// The title is the first text in the card, ahead of the player count and
 	// author. Read structurally to avoid depending on the title's class.
-	const worldNameFrom = (card) => {
-		const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+	const titleElementFrom = (root) => {
+		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 		for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-			const text = node.textContent.trim();
-			if (text) return text.slice(0, 80);
+			if (!node.textContent.trim()) continue;
+			const parent = node.parentElement;
+			// Our own badge sits after the title, never before it, but skip it
+			// anyway so the name can't come back as "Hidden".
+			if (!parent || parent.closest('.VRCWH-BADGE')) continue;
+			return parent;
 		}
-		return '';
+		return null;
+	};
+
+	// The badge lives inside the title element, so it has to be skipped when
+	// reading the name back out.
+	const textWithoutBadge = (el) => {
+		if (!el) return '';
+		let text = '';
+		for (const node of el.childNodes) {
+			if (node.nodeType === 1 && node.classList.contains('VRCWH-BADGE')) continue;
+			text += node.textContent;
+		}
+		return text.trim();
+	};
+
+	const worldNameFrom = (root) =>
+		textWithoutBadge(titleElementFrom(root)).slice(0, 80);
+
+	// Goes inside the title element rather than after it: a world page header
+	// is a column flex, so a sibling would drop onto its own full-width row
+	// instead of sitting beside the name.
+	const syncBadge = (anchor, marked) => {
+		if (!anchor) return;
+
+		const existing = anchor.querySelector(':scope > .VRCWH-BADGE');
+		if (!marked) {
+			existing?.remove();
+			return;
+		}
+		if (existing) return;
+
+		const badge = document.createElement('span');
+		badge.className = 'VRCWH-BADGE';
+		badge.textContent = 'Hidden';
+		anchor.appendChild(badge);
 	};
 
 	// ===========================================================
@@ -421,9 +510,77 @@ const MAX_CLIMB = 10;
 			marked ? 'Un-hide this world' : 'Hide this world',
 		);
 
+		syncBadge(titleElementFrom(card), marked);
+
 		setClass(card, 'VRCWH-WORLD-DIMMED', marked && toggleState === 'dimmed');
 		setClass(card, 'VRCWH-WORLD-HIDDEN', marked && toggleState === 'hidden');
 		setClass(card, 'VRCWH-WORLD-MARKED', marked && toggleState === 'normal');
+	};
+
+	// A world page shows one world, so the card resolver finds nothing there.
+	// Drive it off the URL instead: badge the title, recolour Launch, and add
+	// a labelled toggle so a world can be hidden while you are looking at it.
+	let pageButton = null;
+
+	const togglePageWorld = async (title) => {
+		const id = worldIdFrom(location.pathname);
+		if (!id) return;
+
+		if (isHidden(id)) {
+			delete hidden[id];
+		} else {
+			hidden[id] = textWithoutBadge(title).slice(0, 80);
+		}
+
+		await persistHidden();
+		applyAll();
+	};
+
+	const updateWorldPage = () => {
+		const id = worldIdFrom(location.pathname);
+		const marked = !!id && isHidden(id);
+
+		const launch = document.querySelector(LAUNCH_SELECTOR);
+		if (launch) setClass(launch, 'VRCWH-LAUNCH-HIDDEN', marked);
+
+		const header = document.querySelector(WORLD_INFO_SELECTOR)?.parentElement;
+		const title = header?.querySelector('h2');
+		if (!id || !title) {
+			pageButton?.remove();
+			pageButton = null;
+			return;
+		}
+
+		syncBadge(title, marked);
+
+		if (!pageButton?.isConnected) {
+			pageButton = document.createElement('button');
+			pageButton.type = 'button';
+			pageButton.className = 'VRCWH-PAGE-BTN';
+
+			const icon = document.createElement('span');
+			icon.className = 'VRCWH-PAGE-ICON';
+			pageButton.appendChild(icon);
+
+			const label = document.createElement('span');
+			label.className = 'VRCWH-PAGE-LABEL';
+			pageButton.appendChild(label);
+
+			pageButton.addEventListener('click', async (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				await togglePageWorld(title);
+			});
+
+			header.appendChild(pageButton);
+		}
+
+		setIcon(pageButton.querySelector('.VRCWH-PAGE-ICON'), marked ? 'eye' : 'eyeSlash');
+		setText(
+			pageButton.querySelector('.VRCWH-PAGE-LABEL'),
+			marked ? 'Un-hide this world' : 'Hide this world',
+		);
+		setClass(pageButton, 'VRCWH-BTN-ON', marked);
 	};
 
 	// A row whose every card is hidden leaves a heading and two scroll arrows
@@ -617,6 +774,7 @@ const MAX_CLIMB = 10;
 
 	const applyAll = () => {
 		updateClassOnWorldCards();
+		updateWorldPage();
 		renderFab();
 	};
 
@@ -633,11 +791,11 @@ const MAX_CLIMB = 10;
 		const eventListenerSupported = window.addEventListener;
 
 		// closest(), not a class check: the badge and icon spans live inside
-		// the FAB, and their text/icon rewrites are ours too.
+		// the FAB and the page button, and their rewrites are ours too.
 		const isOurs = (node) =>
 			!!(node?.nodeType === 1
-				? node.closest?.('.VRCWH-BTN, .VRCWH-FAB')
-				: node?.parentElement?.closest?.('.VRCWH-BTN, .VRCWH-FAB'));
+				? node.closest?.(OWN_SELECTOR)
+				: node?.parentElement?.closest?.(OWN_SELECTOR));
 
 		// True when a mutation only concerns nodes this script owns
 		const isOwnMutation = (mutation) => {
