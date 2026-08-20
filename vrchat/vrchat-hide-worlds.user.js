@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.21
+// @version      1.30
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -82,7 +82,15 @@ const DEFAULT_LAUNCH = {
 	type: 'public',
 	region: 'us',
 	inviteMe: true,
+	autoLaunch: true,
 };
+
+// Marks a launch page this script opened, so only those auto-press. A page
+// you opened yourself never carries it.
+const AUTO_HASH = '#vrcwh-launch';
+// VRChat's own Launch World link, the one carrying shortName and attach=1.
+const LAUNCH_WORLD_SELECTOR = 'a[href^="vrchat://"]';
+const AUTO_LAUNCH_TIMEOUT = 20000;
 
 ((_undefined) => {
 	// Enable for debugging
@@ -716,14 +724,44 @@ const DEFAULT_LAUNCH = {
 			body: '{}',
 		});
 
-	// Deliberately never fires vrchat://: that boots the game straight into a
-	// brand new instance. Open VRChat's launch page and leave the choice there.
+	// Never builds a vrchat:// link by hand — one without shortName/attach=1
+	// starts a second client instead of moving the running one. Open VRChat's
+	// launch page and let its own link do the work.
 	const openInstance = (worldId, instanceId) => {
+		const hash = launch.autoLaunch ? AUTO_HASH : '';
 		window.open(
-			`/home/launch?worldId=${worldId}&instanceId=${encodeURIComponent(instanceId)}`,
+			`/home/launch?worldId=${worldId}&instanceId=${encodeURIComponent(
+				instanceId,
+			)}${hash}`,
 			'_blank',
 			'noopener',
 		);
+	};
+
+	// On a launch page we opened, press Launch World once the page has built
+	// its link. Bounded, so a page that never renders one stops trying.
+	let autoLaunchDone = false;
+	let autoLaunchDeadline = 0;
+
+	const runAutoLaunch = () => {
+		if (autoLaunchDone || location.hash !== AUTO_HASH) return;
+
+		if (!autoLaunchDeadline) {
+			autoLaunchDeadline = Date.now() + AUTO_LAUNCH_TIMEOUT;
+		}
+		if (Date.now() > autoLaunchDeadline) {
+			autoLaunchDone = true;
+			return;
+		}
+
+		const link = document.querySelector(LAUNCH_WORLD_SELECTOR);
+		if (!link) return;
+
+		autoLaunchDone = true;
+		// Drop the marker first: a reload must not fire the game again.
+		history.replaceState({}, '', location.pathname + location.search);
+		logDebug('Auto-pressing Launch World');
+		link.click();
 	};
 
 	// `existing` is set when the card already points at a live instance, in
@@ -1171,6 +1209,10 @@ const DEFAULT_LAUNCH = {
 				typeof stored.inviteMe === 'boolean'
 					? stored.inviteMe
 					: DEFAULT_LAUNCH.inviteMe,
+			autoLaunch:
+				typeof stored.autoLaunch === 'boolean'
+					? stored.autoLaunch
+					: DEFAULT_LAUNCH.autoLaunch,
 		};
 	};
 
@@ -1218,6 +1260,24 @@ const DEFAULT_LAUNCH = {
 		return wrap;
 	};
 
+	const checkRow = (label, checked, onToggle) => {
+		const row = document.createElement('button');
+		row.type = 'button';
+		row.className = 'VRCWH-CHECK';
+		setClass(row, 'VRCWH-ON', checked);
+
+		const box = document.createElement('span');
+		box.className = 'VRCWH-CHECK-BOX';
+		row.appendChild(box);
+
+		const text = document.createElement('span');
+		text.textContent = label;
+		row.appendChild(text);
+
+		row.addEventListener('click', onToggle);
+		return row;
+	};
+
 	const sectionTitle = (text) => {
 		const title = document.createElement('div');
 		title.className = 'VRCWH-PANEL-TITLE';
@@ -1243,24 +1303,24 @@ const DEFAULT_LAUNCH = {
 			chipRow(REGIONS, launch.region, (region) => setLaunch({ region })),
 		);
 
-		const check = document.createElement('button');
-		check.type = 'button';
-		check.className = 'VRCWH-CHECK';
-		setClass(check, 'VRCWH-ON', launch.inviteMe);
-		const box = document.createElement('span');
-		box.className = 'VRCWH-CHECK-BOX';
-		check.appendChild(box);
-		const checkLabel = document.createElement('span');
-		checkLabel.textContent = 'Also Invite Me';
-		check.appendChild(checkLabel);
-		check.addEventListener('click', () => setLaunch({ inviteMe: !launch.inviteMe }));
-		el.appendChild(check);
+		el.appendChild(
+			checkRow('Also Invite Me', launch.inviteMe, () =>
+				setLaunch({ inviteMe: !launch.inviteMe }),
+			),
+		);
+		el.appendChild(
+			checkRow('Press Launch World for me', launch.autoLaunch, () =>
+				setLaunch({ autoLaunch: !launch.autoLaunch }),
+			),
+		);
 
 		const note = document.createElement('div');
 		note.className = 'VRCWH-PANEL-NOTE';
-		note.textContent =
-			"Opens VRChat's launch page in a new tab. Nothing starts the game " +
-			'until you press Launch World there.';
+		note.textContent = launch.autoLaunch
+			? "Opens VRChat's launch page and presses Launch World there, which " +
+				'hands the instance to your running game.'
+			: "Opens VRChat's launch page in a new tab. Nothing starts the game " +
+				'until you press Launch World there.';
 		el.appendChild(note);
 
 		return el;
@@ -1366,6 +1426,7 @@ const DEFAULT_LAUNCH = {
 	// ===========================================================
 
 	const applyAll = () => {
+		runAutoLaunch();
 		updateClassOnWorldCards();
 		updateWorldPage();
 		renderLaunchFab();
