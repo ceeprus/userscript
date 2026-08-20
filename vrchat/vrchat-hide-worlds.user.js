@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.30
+// @version      1.31
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -327,19 +327,35 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	font-size: 13px;
 	gap: 6px;
 	justify-content: center;
-	margin: 6px;
+	/* Absolute, never in flow: a Discover card is background-size:cover and
+	   takes its height from its child, so an in-flow button made the card
+	   taller and re-cropped the artwork. */
+	bottom: 6px;
+	left: 6px;
+	right: 6px;
+	margin: 0;
+	opacity: 0;
 	padding: 5px 8px;
-	position: relative;
-	transition: background .1s ease-in, transform .1s ease-in;
-	width: calc(100% - 12px);
-	z-index: 20;
+	pointer-events: none;
+	position: absolute;
+	transition: opacity .12s ease, background .1s ease-in, transform .1s ease-in;
+	z-index: 21;
+}
+
+.VRCWH-CARD:hover .VRCWH-JOIN,
+.VRCWH-CARD:focus-within .VRCWH-JOIN,
+.VRCWH-JOIN:focus { opacity: 1; pointer-events: auto }
+
+/* No hover on touch, so leave it out permanently there. */
+@media (hover: none) {
+	.VRCWH-CARD .VRCWH-JOIN { opacity: .92; pointer-events: auto }
 }
 
 .VRCWH-JOIN:hover { background: #0a6b81; border-color: #0a6b81 }
 
 .VRCWH-JOIN:active { transform: scale(.98) }
 
-.VRCWH-JOIN[disabled] { cursor: default; opacity: .6 }
+.VRCWH-JOIN[disabled] { cursor: default; opacity: .75; pointer-events: none }
 
 .VRCWH-JOIN.VRCWH-JOIN-LIVE { background: #1d6b2f; border-color: #1d6b2f }
 
