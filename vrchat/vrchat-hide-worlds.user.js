@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.20
+// @version      1.21
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -78,16 +78,10 @@ const REGIONS = [
 	{ id: 'jp', label: 'JP' },
 ];
 
-const LAUNCH_MODES = [
-	{ id: 'page', label: 'Launch page' },
-	{ id: 'direct', label: 'Straight to game' },
-];
-
 const DEFAULT_LAUNCH = {
 	type: 'public',
 	region: 'us',
 	inviteMe: true,
-	mode: 'page',
 };
 
 ((_undefined) => {
@@ -722,11 +716,9 @@ const DEFAULT_LAUNCH = {
 			body: '{}',
 		});
 
+	// Deliberately never fires vrchat://: that boots the game straight into a
+	// brand new instance. Open VRChat's launch page and leave the choice there.
 	const openInstance = (worldId, instanceId) => {
-		if (launch.mode === 'direct') {
-			window.location.href = `vrchat://launch?ref=vrchat.com&id=${worldId}:${instanceId}`;
-			return;
-		}
 		window.open(
 			`/home/launch?worldId=${worldId}&instanceId=${encodeURIComponent(instanceId)}`,
 			'_blank',
@@ -1175,7 +1167,6 @@ const DEFAULT_LAUNCH = {
 		return {
 			type: pick(INSTANCE_TYPES, stored.type, DEFAULT_LAUNCH.type),
 			region: pick(REGIONS, stored.region, DEFAULT_LAUNCH.region),
-			mode: pick(LAUNCH_MODES, stored.mode, DEFAULT_LAUNCH.mode),
 			inviteMe:
 				typeof stored.inviteMe === 'boolean'
 					? stored.inviteMe
@@ -1265,15 +1256,11 @@ const DEFAULT_LAUNCH = {
 		check.addEventListener('click', () => setLaunch({ inviteMe: !launch.inviteMe }));
 		el.appendChild(check);
 
-		el.appendChild(sectionTitle('On Click'));
-		el.appendChild(chipRow(LAUNCH_MODES, launch.mode, (mode) => setLaunch({ mode })));
-
 		const note = document.createElement('div');
 		note.className = 'VRCWH-PANEL-NOTE';
 		note.textContent =
-			launch.mode === 'direct'
-				? 'Opens vrchat:// straight away. If the game ignores it, use Launch page.'
-				: "Opens VRChat's own launch page, which builds the game link for you.";
+			"Opens VRChat's launch page in a new tab. Nothing starts the game " +
+			'until you press Launch World there.';
 		el.appendChild(note);
 
 		return el;
