@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.8
-// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets.
+// @version      2.10
+// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. Disclosed games can also be blurred until hovered, or hidden outright.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -31,8 +31,20 @@
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
     const BYPASS_AGE_GATE = true;                            // set age cookies so mature/adult game pages can be read
     let   SCAN_LISTINGS = GM_getValue('sgai:scan', true);    // capsule badges on/off (toggle via menu)
-    let   HIDE_AI       = GM_getValue('sgai:hide', false);   // hide AI-disclosed games entirely (toggle via menu)
-    document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);
+
+    // What to do with an AI-disclosed game in a listing, beyond badging it (cycle via menu):
+    //   'off'  — badge only
+    //   'blur' — blur the card until hovered; it keeps its space, so no layout can break
+    //   'hide' — remove the card from the page
+    const MODES = ['off', 'blur', 'hide'];
+    let MODE = GM_getValue('sgai:mode', null) || (GM_getValue('sgai:hide', false) ? 'hide' : 'off');
+    if (!MODES.includes(MODE)) MODE = 'off';
+    function applyMode() {
+        const r = document.documentElement;
+        r.toggleAttribute('data-sgai-hide', MODE === 'hide');
+        r.toggleAttribute('data-sgai-blur', MODE === 'blur');
+    }
+    applyMode();
     const APP_PAGE_ID = (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;  // viewing a game's own page
 
     /* ---------------- localized disclosure titles (data, MIT from seeeeew/aiwarningforsteam) ----- */
@@ -69,7 +81,12 @@
         .sgai_inline{position:static;top:auto;left:auto;margin-left:8px;box-shadow:none;vertical-align:middle;cursor:default;}
         .sgai_desc{position:static;top:auto;left:auto;margin-top:8px;box-shadow:none;}
         .sgai_host{position:relative;}
+        .sgai_err{color:#9aa4ad;border-color:rgba(154,164,173,.45);opacity:.75;font-size:11px;}
         [data-sgai-hide] .sgai_ai{display:none !important;}
+        /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
+           stays legible on top. Hovering reveals the game. */
+        [data-sgai-blur] .sgai_ai:not(:hover) > *:not(.sgai_cap){filter:blur(10px);}
+        [data-sgai-blur] .sgai_ai:not(:hover){background:rgba(18,18,22,.25);}
     `);
 
     /* ---------------- cache (GM storage) ---------------- */
@@ -77,10 +94,12 @@
     function cacheGet(id) {
         const v = GM_getValue(key(id), null);
         if (!v) return null;
+        if (!('name' in v)) return null;                      // pre-2.9 entry, no game name: refetch once
         if (Date.now() - v.ts > (v.ai ? TTL_AI : TTL_NONE)) return null;
         return v;
     }
-    const cacheSet = (id, d) => GM_setValue(key(id), { ai: !!d.ai, text: d.text || null, ts: Date.now() });
+    const cacheSet = (id, d) =>
+        GM_setValue(key(id), { ai: !!d.ai, text: d.text || null, name: d.name || null, ts: Date.now() });
 
     /* ---------------- parse disclosure out of a document ---------------- */
     function getDisclosure(root) {
@@ -93,6 +112,15 @@
         const ci = text.indexOf(':');                       // drop "The developers describe ... like this:" intro
         if (ci > -1 && ci < 160) text = text.slice(ci + 1).trim();
         return { ai: true, text: text || null };
+    }
+
+    // The game's own name, read off its app page. hideTarget() uses it to recognise where a
+    // capsule's card ends (see there); null when the page didn't load a name (age gate, error).
+    function appName(root) {
+        const el = root.querySelector('#appHubAppName, .apphub_AppName');
+        let n = el ? el.textContent : (root.querySelector('title')?.textContent || '').replace(/ on Steam\s*$/, '');
+        n = (n || '').replace(/\s+/g, ' ').trim();
+        return n || null;
     }
 
     /* ---------------- throttled background lookup ---------------- */
@@ -134,13 +162,23 @@
         const p = (async () => {
             await slot();
             try {
-                const doc = new DOMParser().parseFromString(await fetchAppPage(id), 'text/html');
+                const html = await fetchAppPage(id);
+                // Most games carry no disclosure, and an app page is megabytes: test the raw text
+                // for any of the localized headings first and skip building a DOM for the misses.
+                // (Idea from seeeeew/aiwarningforsteam, which matches the heading in raw HTML.)
+                if (!TITLES.some(t => html.includes(t))) {
+                    const d = { ai: false, text: null, name: null };
+                    cacheSet(id, d);
+                    return d;
+                }
+                const doc = new DOMParser().parseFromString(html, 'text/html');
                 const d = getDisclosure(doc);
+                d.name = appName(doc);
                 cacheSet(id, d);                            // only cache successful reads
                 return d;
             } catch (e) {
                 console.warn('[SteamGameAI] lookup failed', id, e);
-                return { ai: false, text: null, error: true };
+                return { ai: false, text: null, name: null, error: true };
             } finally { release(); inflight.delete(id); }
         })();
         inflight.set(id, p);
@@ -154,6 +192,35 @@
         b.innerHTML = ICON + 'AI';
         if (text) b.title = text;
         return b;
+    }
+
+    // One badge per card: hover-preview popups (and some widgets) contain several links to the
+    // same app — media block, header capsule, title. Claim the smallest ancestor that groups more
+    // than one link to this app id, so only the first capsule in it gets marked. Returns false
+    // when this card was already claimed under `attr`.
+    function claimCard(el, id, attr) {
+        if (el.closest(`[${attr}~="${id}"]`)) return false;
+        let root = el;
+        for (let n = el.parentElement, i = 0; n && i < 8; n = n.parentElement, i++) {
+            if (n.querySelectorAll(`a[href*="/app/${id}"]`).length > 1) { root = n; break; }
+        }
+        const claimed = (root.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
+        if (!claimed.includes(id)) { claimed.push(id); root.setAttribute(attr, claimed.join(' ')); }
+        return true;
+    }
+
+    // A lookup that failed leaves a game looking clean, which matters once a filter is on: the
+    // game stays visible as if it had been checked and cleared. Mark those so the gap is visible
+    // (idea from seeeeew/aiwarningforsteam, which flags failed search-row checks).
+    function errBadge(el, id) {
+        if (MODE === 'off' || !el.isConnected) return;
+        if (badgeKind(el) === 'desc') return;                    // the capsule of this card carries it
+        if (!claimCard(el, id, 'data-sgai-err')) return;
+        if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
+        const b = makeBadge(`AI disclosure check failed for app ${id} — this game was not verified`);
+        b.classList.add('sgai_cap', 'sgai_err');
+        b.innerHTML = ICON + '?';
+        el.appendChild(b);
     }
 
     function titleBadge(text) {
@@ -192,31 +259,48 @@
         return 'corner';
     }
 
-    // The element to hide when "hide AI games" is on — the game's whole card, not just the
-    // capsule anchor. In the React store layouts (home sale widgets, /sale/ pages) the /app/
-    // anchor is only the capsule image; the title, tags, description and buttons are siblings.
-    // So grow outward to the largest ancestor that still only references this app, stopping
-    // before any container that also holds other games — that keeps carousel slides safe
-    // (e.g. the upcoming-releases calendar slide holds several different games).
-    // Page shells, never a game card: growth that reaches one of these would hide the page's own
-    // chrome (navigation, headings, curator admin UI) instead of a game. .page_content_ctn and
+    // The element blur and hide mode act on — the game's whole card, not just the capsule
+    // anchor. In the React store layouts (home sale widgets, /sale/ pages) the /app/
+    // anchor is only the capsule image; the title, tags, description and buttons are siblings,
+    // so we grow outward from the capsule. Three things stop that growth, in order:
+    //   • a container holding another game (foreignApp) — keeps carousel slides and grids safe;
+    //   • a container named for this app (appScoped) — that is exactly one game's card;
+    //   • an ancestor that adds text of its own: if it adds this game's name it is the card and
+    //     we take it, otherwise the text belongs to the page (a calendar date, a section
+    //     heading, curator navigation) and the card ended one level below.
+    // Ancestors that add no text at all are pure layout wrappers and get absorbed, so hiding a
+    // game doesn't leave an empty slot behind in a grid.
+    //
+    // HIDE_STOP is the backstop: page shells that are never a game card, so even a layout none
+    // of the rules above fit can't cost the page its own chrome. .page_content_ctn and
     // .creator_grid_ctn are the curator/creator page bodies; the rest are the store-wide frame.
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
         '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn';
-    const CALENDAR_PAGE = location.pathname.startsWith('/personalcalendar');
-    function hideTarget(el, kind, id) {
+    function hideTarget(el, kind, id, name) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
         let scoped = false;                                  // saw a container named for this app
+        const want = norm(name) || norm(capsuleAlt(t));       // this game's name, for the card test
+        let named = !!want && norm(t.textContent).includes(want);
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
             if (appScoped(n, id)) { t = n; scoped = true; continue; }
             if (scoped) break;                               // past that container: page furniture
-            if (CALENDAR_PAGE && labelChild(n, t)) break;
-            t = n;
+            if (norm(n.textContent) !== norm(t.textContent)) {   // this ancestor adds text of its own
+                if (named || !want) break;                   // not this game's: a label, heading, nav
+                if (!norm(n.textContent).includes(want)) break;
+                return n;                                    // the game's name: the card ends here
+            }
+            t = n;                                           // adds nothing: a wrapper, absorb it
         }
         return t;
     }
+
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const capsuleAlt = el => {
+        const img = el.matches('img') ? el : el.querySelector('img[alt]:not([alt=""])');
+        return (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
+    };
 
     // Is this container named for this app — e.g. the curator page's #app-ctn-<appid>? Such an id
     // marks exactly one game's card, so it is the hide target and growth stops there. Without it,
@@ -227,22 +311,6 @@
     function appScoped(n, id) {
         const s = `${n.id} ${n.getAttribute('data-ds-appid') || ''} ${n.getAttribute('data-appid') || ''}`;
         return new RegExp(`(^|\\D)${id}(\\D|$)`).test(s);
-    }
-
-    // On the personal calendar a day cell is just <date label> + <games list>, so when the day's
-    // only game discloses AI nothing in the cell references another app and growth swallows the
-    // whole cell, date included — the vanished cell then shifts the week grid. Stop before any
-    // ancestor whose other direct children show text without referencing an app (the date label).
-    // Calendar-only: on sale pages a card's title/description are exactly such siblings, and
-    // there the whole card *should* hide.
-    function labelChild(n, from) {
-        for (const c of n.children) {
-            if (c === from || c.classList.contains('sgai_cap')) continue;
-            if (!c.textContent.trim()) continue;
-            if (c.matches('a[href*="/app/"], [data-ds-appid]') || c.querySelector('a[href*="/app/"], [data-ds-appid]')) continue;
-            return true;
-        }
-        return false;
     }
 
     // Does this container reference any app other than `id`?
@@ -256,31 +324,26 @@
         return false;
     }
 
-    function markAI(el, kind, id) {
+    function markAI(m) {
         // On a game's own app page nearly everything references that app (purchase area, queue
         // widgets, media), so hide targets grow into whole page chunks and strip the page —
         // including its screenshots. Hide only inside "More Like This" there; badges unaffected.
-        if (APP_PAGE_ID && !el.closest('#recommended_block')) return;
-        const t = hideTarget(el, kind, id);
+        if (APP_PAGE_ID && !m.el.closest('#recommended_block')) return;
+        const t = hideTarget(m.el, m.kind, m.id, m.name);
+        // A re-render can move the card boundary — a wrapper we absorbed may since have gained
+        // another game. Drop the old tag so the previous target doesn't stay hidden with it.
+        if (m.hidden && m.hidden !== t) m.hidden.classList.remove('sgai_ai');
+        m.hidden = t || null;
         if (t) t.classList.add('sgai_ai');
     }
 
-    function capBadge(el, text, id) {
-        // De-dupe per card: hover-preview popups (and some widgets) contain several links to the
-        // same app — media block, header capsule, title. Claim the smallest ancestor that groups
-        // more than one link to this app id, so only the first capsule in it gets badged.
-        if (el.closest(`[data-sgai-card~="${id}"]`)) return;
-        let root = el;
-        for (let n = el.parentElement, i = 0; n && i < 8; n = n.parentElement, i++) {
-            if (n.querySelectorAll(`a[href*="/app/${id}"]`).length > 1) { root = n; break; }
-        }
-        const claimed = (root.getAttribute('data-sgai-card') || '').split(/\s+/).filter(Boolean);
-        if (!claimed.includes(id)) { claimed.push(id); root.setAttribute('data-sgai-card', claimed.join(' ')); }
-
+    function capBadge(el, text, id, name) {
+        if (!claimCard(el, id, 'data-sgai-card')) return;
         const kind = badgeKind(el);
+        const m = { el, kind, text, id, name, hidden: null };
         placeBadge(el, kind, text);
-        markAI(el, kind, id);
-        managed.push({ el, kind, text, id });
+        markAI(m);
+        managed.push(m);
     }
 
     // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
@@ -290,7 +353,7 @@
             const m = managed[i];
             if (!m.el.isConnected) { managed.splice(i, 1); continue; }
             placeBadge(m.el, m.kind, m.text);
-            markAI(m.el, m.kind, m.id);
+            markAI(m);
         }
     }
 
@@ -299,7 +362,10 @@
         if (!e.isIntersecting) return;
         io.unobserve(e.target);
         const el = e.target, id = el.dataset.sgaiId;
-        lookup(id).then(d => { if (d && d.ai) capBadge(el, d.text, id); });
+        lookup(id).then(d => {
+            if (d && d.ai) capBadge(el, d.text, id, d.name);
+            else if (d && d.error) errBadge(el, id);
+        });
         el.dataset.sgai = 'done';
     }), { rootMargin: ROOT_MARGIN });
 
@@ -382,6 +448,7 @@
     /* ---------------- current app page: badge title + seed cache ---------------- */
     if (APP_PAGE_ID) {
         const d = getDisclosure(document);
+        d.name = appName(document);
         cacheSet(APP_PAGE_ID, d);
         if (d.ai) titleBadge(d.text);
     }
@@ -392,10 +459,12 @@
             (GM_listValues() || []).forEach(k => { if (/^sgai:\d+$/.test(k)) GM_deleteValue(k); });  // appid caches only
             alert('Steam AI cache cleared.');
         });
-        GM_registerMenuCommand(`Hide AI-disclosed games: ${HIDE_AI ? 'ON' : 'OFF'} — toggle`, () => {
-            HIDE_AI = !HIDE_AI;
-            GM_setValue('sgai:hide', HIDE_AI);
-            document.documentElement.toggleAttribute('data-sgai-hide', HIDE_AI);   // applies instantly
+        const LABEL = { off: 'badge only', blur: 'blur until hovered', hide: 'hide' };
+        GM_registerMenuCommand(`AI-disclosed games: ${LABEL[MODE]} — cycle`, () => {
+            MODE = MODES[(MODES.indexOf(MODE) + 1) % MODES.length];
+            GM_setValue('sgai:mode', MODE);
+            applyMode();                                                  // applies instantly
+            alert(`AI-disclosed games: ${LABEL[MODE]}.\n(Menu label updates on next page load.)`);
         });
         GM_registerMenuCommand(`Capsule badges: ${SCAN_LISTINGS ? 'ON' : 'OFF'} — toggle & reload`, () => {
             GM_setValue('sgai:scan', !SCAN_LISTINGS);
