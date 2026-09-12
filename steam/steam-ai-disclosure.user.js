@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.10
+// @version      2.11
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. Disclosed games can also be blurred until hovered, or hidden outright.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
 // @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
 // @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
+// @supportURL   https://github.com/ceeprus/userscript/issues
 // @match        https://store.steampowered.com/*
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -44,8 +45,20 @@
         r.toggleAttribute('data-sgai-hide', MODE === 'hide');
         r.toggleAttribute('data-sgai-blur', MODE === 'blur');
     }
+    function setMode(mode) {
+        MODE = mode;
+        GM_setValue('sgai:mode', MODE);
+        applyMode();
+        heal();               // re-assert badges and the blur positioning guard on existing cards
+        syncPanel();
+    }
     applyMode();
     const APP_PAGE_ID = (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;  // viewing a game's own page
+    const SEARCH_PAGE = location.pathname.startsWith('/search');
+
+    // Named in every badge tooltip, so a screenshot in a bug report says which build made it.
+    const INFO = (typeof GM_info !== 'undefined' && GM_info.script) || {};
+    const SIGNATURE = `${INFO.name || 'Steam AI Content Disclosure Badge'}${INFO.version ? ' v' + INFO.version : ''}`;
 
     /* ---------------- localized disclosure titles (data, MIT from seeeeew/aiwarningforsteam) ----- */
     const TITLES = ["AI Generated Content Disclosure","AI 生成内容披露","AI 生成內容聲明","AI生成コンテンツの開示",
@@ -82,11 +95,19 @@
         .sgai_desc{position:static;top:auto;left:auto;margin-top:8px;box-shadow:none;}
         .sgai_host{position:relative;}
         .sgai_err{color:#9aa4ad;border-color:rgba(154,164,173,.45);opacity:.75;font-size:11px;}
+        /* Lookup in flight: Steam's own throbber, so a game that is about to be blurred or hidden
+           doesn't just sit there looking checked-and-cleared. */
+        .sgai_check{width:1.15em;height:1.15em;padding:3px;border-color:rgba(154,164,173,.35);
+            background:rgba(18,18,22,.88) url(https://community.fastly.steamstatic.com/public/images/login/throbber.gif) center/1.15em no-repeat;}
         [data-sgai-hide] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
         [data-sgai-blur] .sgai_ai:not(:hover) > *:not(.sgai_cap){filter:blur(10px);}
         [data-sgai-blur] .sgai_ai:not(:hover){background:rgba(18,18,22,.25);}
+        [data-sgai-blur] .sgai_ai:not(:hover)::after{content:"AI disclosure — hover to reveal";
+            position:absolute;inset:0;z-index:55;display:flex;align-items:center;justify-content:center;
+            text-align:center;padding:4px;pointer-events:none;
+            font:700 clamp(10px,1.1vw,13px)/1.25 "Motiva Sans",Arial,sans-serif;color:${ACCENT};}
     `);
 
     /* ---------------- cache (GM storage) ---------------- */
@@ -190,7 +211,9 @@
         const b = document.createElement('span');
         b.className = 'sgai_badge';
         b.innerHTML = ICON + 'AI';
-        if (text) b.title = text;
+        b.title = text ? `${text}
+
+— ${SIGNATURE}` : SIGNATURE;
         return b;
     }
 
@@ -207,6 +230,23 @@
         const claimed = (root.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
         if (!claimed.includes(id)) { claimed.push(id); root.setAttribute(attr, claimed.join(' ')); }
         return true;
+    }
+
+    // Shown while a lookup is actually on the network (a cache hit needs none), so a game that is
+    // about to be blurred or hidden doesn't read as already checked and cleared. Only with a
+    // filter on, where that misreading costs something.
+    // (Idea from seeeeew/aiwarningforsteam, which throbbers its pending search rows.)
+    function checkBadge(el, on) {
+        const had = el.querySelector(':scope > .sgai_check');
+        if (!on) { if (had) had.remove(); return; }
+        if (MODE === 'off' || had) return;
+        if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
+        const b = document.createElement('span');
+        b.className = 'sgai_badge sgai_cap sgai_check';
+        b.title = `Checking for an AI Generated Content Disclosure…
+
+— ${SIGNATURE}`;
+        el.appendChild(b);
     }
 
     // A lookup that failed leaves a game looking clean, which matters once a filter is on: the
@@ -334,7 +374,12 @@
         // another game. Drop the old tag so the previous target doesn't stay hidden with it.
         if (m.hidden && m.hidden !== t) m.hidden.classList.remove('sgai_ai');
         m.hidden = t || null;
-        if (t) t.classList.add('sgai_ai');
+        if (!t) return;
+        // Blur mode draws its label across the card, so the card has to be the positioning
+        // context; without this the label would anchor to whatever ancestor happens to be
+        // positioned. Same guard we use for badge hosts: only when nothing is set already.
+        if (MODE === 'blur' && getComputedStyle(t).position === 'static') t.classList.add('sgai_host');
+        t.classList.add('sgai_ai');
     }
 
     function capBadge(el, text, id, name) {
@@ -362,7 +407,9 @@
         if (!e.isIntersecting) return;
         io.unobserve(e.target);
         const el = e.target, id = el.dataset.sgaiId;
+        if (!cacheGet(id)) checkBadge(el, true);               // going to the network: show it
         lookup(id).then(d => {
+            checkBadge(el, false);
             if (d && d.ai) capBadge(el, d.text, id, d.name);
             else if (d && d.error) errBadge(el, id);
         });
@@ -440,7 +487,7 @@
 
     if (SCAN_LISTINGS) {
         let pending = false;
-        const rescan = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; scan(); heal(); }); };
+        const rescan = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; scan(); heal(); ensurePanel(); }); };
         new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
         scan();
     }
@@ -453,6 +500,72 @@
         if (d.ai) titleBadge(d.text);
     }
 
+    /* ---------------- search page: filter panel in Steam's own sidebar ---------------- */
+    // The menu command is the only way to reach these modes otherwise, and nobody finds a
+    // userscript menu. On /search Steam has a sidebar of filter blocks, so put one there in its
+    // own markup. (Idea and markup shape from seeeeew/aiwarningforsteam.)
+    const PANEL_LABEL = { off: 'Badge only', blur: 'Blur until hovered', hide: 'Hide from results' };
+    let panel = null;
+
+    function syncPanel() {
+        if (!panel) return;
+        panel.querySelectorAll('.tab_filter_control_row').forEach(row => {
+            const on = row.dataset.sgaiValue === MODE;
+            row.classList.toggle('checked', on);
+            row.querySelector('.tab_filter_control').classList.toggle('checked', on);
+        });
+    }
+
+    function buildPanel() {
+        const blocks = [...document.querySelectorAll('#additional_search_options .block')];
+        const anchor = blocks[blocks.length - 1];
+        if (!anchor) return;
+
+        panel = document.createElement('div');
+        panel.className = 'block search_collapse_block';
+        panel.id = 'sgai_filter';
+        panel.dataset.collapseName = 'sgai_filter';
+        panel.innerHTML =
+            '<div class="block_header labs_block_header" role="button">' +
+                '<div>AI Generated Content Disclosure</div>' +
+            '</div>' +
+            '<div class="block_content block_content_inner"></div>';
+        panel.querySelector('.block_header').title = SIGNATURE;
+
+        const content = panel.querySelector('.block_content');
+        for (const mode of MODES) {
+            const row = document.createElement('div');
+            row.className = 'tab_filter_control_row';
+            row.dataset.sgaiValue = mode;
+            row.innerHTML =
+                '<span class="tab_filter_control tab_filter_control_include" role="button" tabindex="0">' +
+                    '<span class="tab_filter_label_container">' +
+                        '<span class="tab_filter_control_checkbox"></span>' +
+                        `<span class="tab_filter_control_label">${PANEL_LABEL[mode]}</span>` +
+                    '</span>' +
+                '</span>';
+            row.addEventListener('click', () => setMode(mode));
+            content.append(row);
+        }
+
+        content.hidden = GM_getValue('sgai:panel-collapsed', false);
+        panel.querySelector('.block_header').addEventListener('click', () => {
+            content.hidden = !content.hidden;
+            GM_setValue('sgai:panel-collapsed', content.hidden);
+        });
+
+        anchor.after(panel);
+        syncPanel();
+    }
+
+    // The sidebar is server-rendered, but a re-render can drop our block: rebuild it then.
+    function ensurePanel() {
+        if (!SEARCH_PAGE || (panel && panel.isConnected)) return;
+        panel = null;
+        buildPanel();
+    }
+    ensurePanel();
+
     /* ---------------- menu ---------------- */
     if (typeof GM_registerMenuCommand !== 'undefined') {
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
@@ -461,9 +574,7 @@
         });
         const LABEL = { off: 'badge only', blur: 'blur until hovered', hide: 'hide' };
         GM_registerMenuCommand(`AI-disclosed games: ${LABEL[MODE]} — cycle`, () => {
-            MODE = MODES[(MODES.indexOf(MODE) + 1) % MODES.length];
-            GM_setValue('sgai:mode', MODE);
-            applyMode();                                                  // applies instantly
+            setMode(MODES[(MODES.indexOf(MODE) + 1) % MODES.length]);     // applies instantly
             alert(`AI-disclosed games: ${LABEL[MODE]}.\n(Menu label updates on next page load.)`);
         });
         GM_registerMenuCommand(`Capsule badges: ${SCAN_LISTINGS ? 'ON' : 'OFF'} — toggle & reload`, () => {
