@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.7
+// @version      2.8
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -198,17 +198,35 @@
     // So grow outward to the largest ancestor that still only references this app, stopping
     // before any container that also holds other games — that keeps carousel slides safe
     // (e.g. the upcoming-releases calendar slide holds several different games).
-    const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget]';
+    // Page shells, never a game card: growth that reaches one of these would hide the page's own
+    // chrome (navigation, headings, curator admin UI) instead of a game. .page_content_ctn and
+    // .creator_grid_ctn are the curator/creator page bodies; the rest are the store-wide frame.
+    const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
+        '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn';
     const CALENDAR_PAGE = location.pathname.startsWith('/personalcalendar');
     function hideTarget(el, kind, id) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
+        let scoped = false;                                  // saw a container named for this app
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
+            if (appScoped(n, id)) { t = n; scoped = true; continue; }
+            if (scoped) break;                               // past that container: page furniture
             if (CALENDAR_PAGE && labelChild(n, t)) break;
             t = n;
         }
         return t;
+    }
+
+    // Is this container named for this app — e.g. the curator page's #app-ctn-<appid>? Such an id
+    // marks exactly one game's card, so it is the hide target and growth stops there. Without it,
+    // a page showing a single game (a curator with one recommendation, a calendar day with one
+    // release) never trips foreignApp and growth runs to the level cap, taking the page with it.
+    // Ids and data-* only: React's hashed class names carry digit runs that can collide with a
+    // short appid.
+    function appScoped(n, id) {
+        const s = `${n.id} ${n.getAttribute('data-ds-appid') || ''} ${n.getAttribute('data-appid') || ''}`;
+        return new RegExp(`(^|\\D)${id}(\\D|$)`).test(s);
     }
 
     // On the personal calendar a day cell is just <date label> + <games list>, so when the day's
@@ -254,7 +272,7 @@
         if (el.closest(`[data-sgai-card~="${id}"]`)) return;
         let root = el;
         for (let n = el.parentElement, i = 0; n && i < 8; n = n.parentElement, i++) {
-            if (n.querySelectorAll(`a[href*="/app/${id}"]`).length > 1) root = n;
+            if (n.querySelectorAll(`a[href*="/app/${id}"]`).length > 1) { root = n; break; }
         }
         const claimed = (root.getAttribute('data-sgai-card') || '').split(/\s+/).filter(Boolean);
         if (!claimed.includes(id)) { claimed.push(id); root.setAttribute('data-sgai-card', claimed.join(' ')); }
