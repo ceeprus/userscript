@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.11
-// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. Disclosed games can also be blurred until hovered, or hidden outright.
+// @version      2.12
+// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -31,30 +31,36 @@
     const MAX_CONCURRENT = 3;                                // parallel background fetches
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
     const BYPASS_AGE_GATE = true;                            // set age cookies so mature/adult game pages can be read
-    let   SCAN_LISTINGS = GM_getValue('sgai:scan', true);    // capsule badges on/off (toggle via menu)
 
-    // What to do with an AI-disclosed game in a listing, beyond badging it (cycle via menu):
-    //   'off'  — badge only
-    //   'blur' — blur the card until hovered; it keeps its space, so no layout can break
-    //   'hide' — remove the card from the page
-    const MODES = ['off', 'blur', 'hide'];
-    let MODE = GM_getValue('sgai:mode', null) || (GM_getValue('sgai:hide', false) ? 'hide' : 'off');
-    if (!MODES.includes(MODE)) MODE = 'off';
-    function applyMode() {
-        const r = document.documentElement;
-        r.toggleAttribute('data-sgai-hide', MODE === 'hide');
-        r.toggleAttribute('data-sgai-blur', MODE === 'blur');
+    // Everything listings do with an AI-disclosed game, cycled by the eye button in Steam's header:
+    //   'skip'  — don't check listings at all (no background lookups)
+    //   'badge' — badge the game
+    //   'blur'  — badge it, and blur the card until hovered; it keeps its space, so no layout breaks
+    //   'hide'  — badge it, and remove the card from the page
+    const MODES = ['skip', 'badge', 'blur', 'hide'];
+    let MODE = loadMode();
+    function loadMode() {
+        const m = GM_getValue('sgai:mode', null);
+        if (GM_getValue('sgai:scan', true) === false) return 'skip';   // pre-2.12 "capsule badges OFF"
+        if (MODES.includes(m)) return m;
+        if (m === 'off') return 'badge';                               // pre-2.12 name for badge-only
+        return GM_getValue('sgai:hide', false) ? 'hide' : 'badge';     // pre-2.7 boolean
     }
+    // Blur and hide are the modes where an unbadged game reads as "checked and cleared", so they
+    // are the ones that need the in-flight and failed-lookup markers.
+    const filtering = () => MODE === 'blur' || MODE === 'hide';
+    const applyMode = () => { document.documentElement.dataset.sgaiMode = MODE; };
     function setMode(mode) {
         MODE = mode;
         GM_setValue('sgai:mode', MODE);
+        GM_deleteValue('sgai:scan');          // folded into MODE; a stale value must not win next load
         applyMode();
-        heal();               // re-assert badges and the blur positioning guard on existing cards
-        syncPanel();
+        if (MODE !== 'skip') scan();          // leaving skip: this may be the page's first scan
+        heal();                               // re-assert badges and the blur positioning guard
+        syncEye();
     }
     applyMode();
     const APP_PAGE_ID = (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;  // viewing a game's own page
-    const SEARCH_PAGE = location.pathname.startsWith('/search');
 
     // Named in every badge tooltip, so a screenshot in a bug report says which build made it.
     const INFO = (typeof GM_info !== 'undefined' && GM_info.script) || {};
@@ -74,40 +80,50 @@
     const TITLE_SET = new Set(TITLES);
 
     /* ---------------- style ---------------- */
-    // Accent color of the badge (text + icon + border). Swap to the red pair for a warning look:
-    //   amber (default): '#ffce5c' / 'rgba(255,206,92,.55)'
-    //   warning red:     '#ff5d5d' / 'rgba(255,93,93,.55)'
+    // The badge is shaped like Steam's own capsule flags (the discount chip, "Free To Play"):
+    // flat, dark, 2px corners, small uppercase Motiva Sans — just amber instead of Steam's green.
+    // Swap ACCENT to '#ff5d5d' for a warning-red look.
     const ACCENT = '#ffce5c';
-    const ACCENT_BORDER = 'rgba(255,206,92,.55)';
-
-    // "No-AI" circle-slash icon (scales with the badge font via em units).
-    const ICON = '<svg viewBox="0 0 24 24" width="1.15em" height="1.15em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/></svg>';
 
     (GM_addStyle || (css => { const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }))(`
-        .sgai_badge{display:inline-flex;align-items:center;gap:4px;font:700 13px/1 "Motiva Sans",Arial,sans-serif;
-            color:${ACCENT};background:rgba(18,18,22,.88);border:1px solid ${ACCENT_BORDER};
-            border-radius:4px;padding:3px 6px;vertical-align:middle;white-space:nowrap;}
-        .sgai_title{margin-left:10px;cursor:pointer;}
-        .sgai_title:hover{background:rgba(255,206,92,.18);}
-        .sgai_cap{position:absolute;top:6px;left:6px;z-index:50;padding:2px 5px;font-size:12px;
-            box-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:auto;}
-        .sgai_inline{position:static;top:auto;left:auto;margin-left:8px;box-shadow:none;vertical-align:middle;cursor:default;}
-        .sgai_desc{position:static;top:auto;left:auto;margin-top:8px;box-shadow:none;}
+        .sgai_badge{display:inline-block;font:700 11px/1 "Motiva Sans",Arial,sans-serif;
+            letter-spacing:.7px;text-transform:uppercase;color:${ACCENT};background:rgba(0,0,0,.85);
+            border-radius:2px;padding:4px 5px;vertical-align:middle;white-space:nowrap;}
+        .sgai_title{margin-left:10px;font-size:12px;padding:5px 7px;cursor:pointer;}
+        .sgai_title:hover{color:#fff;}
+        .sgai_cap{position:absolute;top:4px;left:4px;z-index:50;pointer-events:auto;}
+        .sgai_inline{position:static;margin-left:8px;cursor:default;}
+        .sgai_desc{position:static;margin-top:8px;}
         .sgai_host{position:relative;}
-        .sgai_err{color:#9aa4ad;border-color:rgba(154,164,173,.45);opacity:.75;font-size:11px;}
+        .sgai_err{color:#8f98a0;}
         /* Lookup in flight: Steam's own throbber, so a game that is about to be blurred or hidden
            doesn't just sit there looking checked-and-cleared. */
-        .sgai_check{width:1.15em;height:1.15em;padding:3px;border-color:rgba(154,164,173,.35);
-            background:rgba(18,18,22,.88) url(https://community.fastly.steamstatic.com/public/images/login/throbber.gif) center/1.15em no-repeat;}
-        [data-sgai-hide] .sgai_ai{display:none !important;}
+        .sgai_check{width:12px;height:12px;padding:4px;
+            background:rgba(0,0,0,.85) url(https://community.fastly.steamstatic.com/public/images/login/throbber.gif) center/12px no-repeat;}
+        [data-sgai-mode="skip"] .sgai_cap{display:none !important;}
+        [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
-        [data-sgai-blur] .sgai_ai:not(:hover) > *:not(.sgai_cap){filter:blur(10px);}
-        [data-sgai-blur] .sgai_ai:not(:hover){background:rgba(18,18,22,.25);}
-        [data-sgai-blur] .sgai_ai:not(:hover)::after{content:"AI disclosure — hover to reveal";
+        [data-sgai-mode="blur"] .sgai_ai:not(:hover) > *:not(.sgai_cap){filter:blur(10px);}
+        [data-sgai-mode="blur"] .sgai_ai:not(:hover){background:rgba(0,0,0,.25);}
+        [data-sgai-mode="blur"] .sgai_ai:not(:hover)::after{content:"AI disclosure — hover to reveal";
             position:absolute;inset:0;z-index:55;display:flex;align-items:center;justify-content:center;
             text-align:center;padding:4px;pointer-events:none;
             font:700 clamp(10px,1.1vw,13px)/1.25 "Motiva Sans",Arial,sans-serif;color:${ACCENT};}
+        /* Eye toggle, docked into the global header next to the notifications/account items.
+           The header styles its children through #global_action_menu, and an id outranks any
+           selector we can write, so the box and the state color are held with !important. */
+        .sgai_eye{float:left;display:flex !important;align-items:center;justify-content:center;
+            box-sizing:border-box;width:26px !important;height:26px !important;padding:0 !important;
+            margin:0 10px 0 0;border-radius:2px;cursor:pointer;
+            color:#b8b6b4 !important;background:rgba(0,0,0,.25);}
+        .sgai_eye:hover{background:rgba(103,193,245,.25);filter:brightness(1.3);}
+        .sgai_eye svg{display:block;width:17px;height:17px;}
+        .sgai_eye[data-mode="skip"]{opacity:.5;}
+        .sgai_eye[data-mode="blur"],.sgai_eye[data-mode="hide"]{color:${ACCENT} !important;}
+        /* Pages without the header (a few /sale/ layouts): park it in the corner instead. */
+        .sgai_eye_float{position:fixed;top:12px;right:14px;z-index:9999;float:none;margin:0;
+            background:rgba(0,0,0,.75);}
     `);
 
     /* ---------------- cache (GM storage) ---------------- */
@@ -210,7 +226,7 @@
     function makeBadge(text) {
         const b = document.createElement('span');
         b.className = 'sgai_badge';
-        b.innerHTML = ICON + 'AI';
+        b.textContent = 'AI';
         b.title = text ? `${text}
 
 — ${SIGNATURE}` : SIGNATURE;
@@ -239,7 +255,7 @@
     function checkBadge(el, on) {
         const had = el.querySelector(':scope > .sgai_check');
         if (!on) { if (had) had.remove(); return; }
-        if (MODE === 'off' || had) return;
+        if (!filtering() || had) return;
         if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
         const b = document.createElement('span');
         b.className = 'sgai_badge sgai_cap sgai_check';
@@ -253,13 +269,13 @@
     // game stays visible as if it had been checked and cleared. Mark those so the gap is visible
     // (idea from seeeeew/aiwarningforsteam, which flags failed search-row checks).
     function errBadge(el, id) {
-        if (MODE === 'off' || !el.isConnected) return;
+        if (!filtering() || !el.isConnected) return;
         if (badgeKind(el) === 'desc') return;                    // the capsule of this card carries it
         if (!claimCard(el, id, 'data-sgai-err')) return;
         if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
         const b = makeBadge(`AI disclosure check failed for app ${id} — this game was not verified`);
         b.classList.add('sgai_cap', 'sgai_err');
-        b.innerHTML = ICON + '?';
+        b.textContent = 'AI?';
         el.appendChild(b);
     }
 
@@ -485,12 +501,21 @@
         }
     }
 
-    if (SCAN_LISTINGS) {
-        let pending = false;
-        const rescan = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; scan(); heal(); ensurePanel(); }); };
-        new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
-        scan();
-    }
+    // The observer runs in every mode: even in 'skip' it keeps the eye docked, and it re-asserts
+    // badges that a React re-render dropped.
+    let pending = false;
+    const rescan = () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => {
+            pending = false;
+            if (MODE !== 'skip') scan();
+            heal();
+            ensureEye();
+        });
+    };
+    new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
+    if (MODE !== 'skip') scan();
 
     /* ---------------- current app page: badge title + seed cache ---------------- */
     if (APP_PAGE_ID) {
@@ -500,86 +525,80 @@
         if (d.ai) titleBadge(d.text);
     }
 
-    /* ---------------- search page: filter panel in Steam's own sidebar ---------------- */
-    // The menu command is the only way to reach these modes otherwise, and nobody finds a
-    // userscript menu. On /search Steam has a sidebar of filter blocks, so put one there in its
-    // own markup. (Idea and markup shape from seeeeew/aiwarningforsteam.)
-    const PANEL_LABEL = { off: 'Badge only', blur: 'Blur until hovered', hide: 'Hide from results' };
-    let panel = null;
+    /* ---------------- eye toggle in Steam's global header ---------------- */
+    // One control for every mode, on the page itself — the same eye the VRChat script uses, so
+    // nothing has to be toggled from the userscript manager's menu.
+    const EYE = {
+        skip:  { open: false, label: 'listings not checked' },
+        badge: { open: true,  label: 'badge disclosed games' },
+        blur:  { open: true,  label: 'blur disclosed games until hovered' },
+        hide:  { open: false, label: 'hide disclosed games' },
+    };
+    const EYE_SVG = {
+        open: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="currentColor" d="M24 9C14 9 5.46 15.22 2 24c3.46 8.78 12 15 22 15 10.01 0 18.54-6.22 22-15-3.46-8.78-11.99-15-22-15zm0 25c-5.52 0-10-4.48-10-10s4.48-10 10-10 10 4.48 10 10-4.48 10-10 10zm0-16c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/></svg>',
+        shut: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="currentColor" d="M24 14c5.52 0 10 4.48 10 10 0 1.29-.26 2.52-.71 3.65l5.85 5.85c3.02-2.52 5.4-5.78 6.87-9.5-3.47-8.78-12-15-22.01-15-2.8 0-5.48.5-7.97 1.4l4.32 4.31c1.13-.44 2.36-.71 3.65-.71zM4 8.55l4.56 4.56.91.91C6.17 16.6 3.56 20.03 2 24c3.46 8.78 12 15 22 15 3.1 0 6.06-.6 8.77-1.69l.85.85L39.45 44 42 41.46 6.55 6 4 8.55zM15.06 19.6l3.09 3.09c-.09.43-.15.86-.15 1.31 0 3.31 2.69 6 6 6 .45 0 .88-.06 1.3-.15l3.09 3.09C27.06 33.6 25.58 34 24 34c-5.52 0-10-4.48-10-10 0-1.58.4-3.06 1.06-4.4zm8.61-1.57 6.3 6.3L30 24c0-3.31-2.69-6-6-6l-.33.03z"/></svg>',
+    };
+    const nextMode = () => MODES[(MODES.indexOf(MODE) + 1) % MODES.length];
+    let eye = null;
 
-    function syncPanel() {
-        if (!panel) return;
-        panel.querySelectorAll('.tab_filter_control_row').forEach(row => {
-            const on = row.dataset.sgaiValue === MODE;
-            row.classList.toggle('checked', on);
-            row.querySelector('.tab_filter_control').classList.toggle('checked', on);
+    function syncEye() {
+        if (!eye) return;
+        eye.dataset.mode = MODE;
+        eye.innerHTML = EYE_SVG[EYE[MODE].open ? 'open' : 'shut'];
+        eye.title = `AI disclosure: ${EYE[MODE].label}\nClick to cycle — next: ${EYE[nextMode()].label}\n\n— ${SIGNATURE}`;
+    }
+
+    // The header is server-rendered, but a React page can re-render around it; rescan() calls this
+    // so a dropped button comes back.
+    function ensureEye() {
+        if (eye && eye.isConnected) return;
+        eye = document.createElement('div');
+        eye.className = 'sgai_eye';
+        eye.setAttribute('role', 'button');
+        eye.setAttribute('tabindex', '0');
+        eye.addEventListener('click', () => setMode(nextMode()));
+        eye.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            setMode(nextMode());
         });
+        const host = ['#global_action_menu', '#global_actions', '#global_header .content']
+            .map(sel => document.querySelector(sel)).find(Boolean);
+        if (host) host.prepend(eye);
+        else { eye.classList.add('sgai_eye_float'); document.body.appendChild(eye); }
+        syncEye();
+        alignEye();
     }
 
-    function buildPanel() {
-        const blocks = [...document.querySelectorAll('#additional_search_options .block')];
-        const anchor = blocks[blocks.length - 1];
-        if (!anchor) return;
-
-        panel = document.createElement('div');
-        panel.className = 'block search_collapse_block';
-        panel.id = 'sgai_filter';
-        panel.dataset.collapseName = 'sgai_filter';
-        panel.innerHTML =
-            '<div class="block_header labs_block_header" role="button">' +
-                '<div>AI Generated Content Disclosure</div>' +
-            '</div>' +
-            '<div class="block_content block_content_inner"></div>';
-        panel.querySelector('.block_header').title = SIGNATURE;
-
-        const content = panel.querySelector('.block_content');
-        for (const mode of MODES) {
-            const row = document.createElement('div');
-            row.className = 'tab_filter_control_row';
-            row.dataset.sgaiValue = mode;
-            row.innerHTML =
-                '<span class="tab_filter_control tab_filter_control_include" role="button" tabindex="0">' +
-                    '<span class="tab_filter_label_container">' +
-                        '<span class="tab_filter_control_checkbox"></span>' +
-                        `<span class="tab_filter_control_label">${PANEL_LABEL[mode]}</span>` +
-                    '</span>' +
-                '</span>';
-            row.addEventListener('click', () => setMode(mode));
-            content.append(row);
-        }
-
-        content.hidden = GM_getValue('sgai:panel-collapsed', false);
-        panel.querySelector('.block_header').addEventListener('click', () => {
-            content.hidden = !content.hidden;
-            GM_setValue('sgai:panel-collapsed', content.hidden);
-        });
-
-        anchor.after(panel);
-        syncPanel();
+    // The header lays its items out with floats, which stack from the top edge — our button is
+    // taller than a text link, so it hangs below their centre line, by a different amount in the
+    // logged-in and logged-out headers. Rather than guess a margin, measure a real sibling and
+    // nudge onto its centre with a transform, which moves the button without disturbing the
+    // layout that was just measured. (Same measure-a-neighbour trick as the VRChat script.)
+    function alignEye() {
+        if (!eye || !eye.isConnected || eye.classList.contains('sgai_eye_float')) return;
+        eye.style.transform = '';                            // measure untransformed
+        const sib = [...eye.parentElement.children].find(n => n !== eye && n.getBoundingClientRect().height);
+        if (!sib) return;                                    // nothing to line up with
+        const mine = eye.getBoundingClientRect(), theirs = sib.getBoundingClientRect();
+        if (!mine.height || !theirs.height) return;          // header not laid out yet
+        const shift = Math.round((theirs.top + theirs.height / 2) - (mine.top + mine.height / 2));
+        if (shift) eye.style.transform = `translateY(${shift}px)`;
     }
 
-    // The sidebar is server-rendered, but a re-render can drop our block: rebuild it then.
-    function ensurePanel() {
-        if (!SEARCH_PAGE || (panel && panel.isConnected)) return;
-        panel = null;
-        buildPanel();
-    }
-    ensurePanel();
+    ensureEye();
+    // The avatar image and Motiva Sans both land after document-idle and move the header's items,
+    // so re-centre once the page has settled, and again whenever the layout changes.
+    addEventListener('load', alignEye);
+    addEventListener('resize', alignEye);
+    document.fonts?.ready.then(alignEye);
 
     /* ---------------- menu ---------------- */
+    // Modes live on the eye button; only the cache reset is left with nowhere better to sit.
     if (typeof GM_registerMenuCommand !== 'undefined') {
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
             (GM_listValues() || []).forEach(k => { if (/^sgai:\d+$/.test(k)) GM_deleteValue(k); });  // appid caches only
             alert('Steam AI cache cleared.');
-        });
-        const LABEL = { off: 'badge only', blur: 'blur until hovered', hide: 'hide' };
-        GM_registerMenuCommand(`AI-disclosed games: ${LABEL[MODE]} — cycle`, () => {
-            setMode(MODES[(MODES.indexOf(MODE) + 1) % MODES.length]);     // applies instantly
-            alert(`AI-disclosed games: ${LABEL[MODE]}.\n(Menu label updates on next page load.)`);
-        });
-        GM_registerMenuCommand(`Capsule badges: ${SCAN_LISTINGS ? 'ON' : 'OFF'} — toggle & reload`, () => {
-            GM_setValue('sgai:scan', !SCAN_LISTINGS);
-            location.reload();
         });
     }
 })();
