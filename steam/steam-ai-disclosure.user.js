@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.14
+// @version      2.15
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -68,8 +68,8 @@
     }
     applyMode();
     // Steam's React pages navigate with pushState, so this is not fixed for the life of the tab.
-    // It has to be re-read: on a game's own page hide and blur are restricted to "More Like This",
-    // and carrying that restriction to the next page left the filter silently doing nothing.
+    // It has to be re-read: on a game's own page hide and blur are restricted to its carousels of
+    // other games, and carrying that restriction to the next page left the filter doing nothing.
     const appIdFromPath = () => (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;
     let APP_PAGE_ID = appIdFromPath();
 
@@ -550,6 +550,8 @@
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
         '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn';
 
+    const APP_CAROUSELS = '#recommended_block, [data-featuretarget="storeitems-carousel"], [data-featuretarget="creatorhome-carousel"]';
+
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Word-boundary, so the game "Control" is not found inside "Controller-friendly picks".
     const namesGame = (text, want) => new RegExp(`(^|\\W)${escapeRe(want)}(\\W|$)`).test(text);
@@ -617,8 +619,11 @@
         }
         // On a game's own app page nearly everything references that app (purchase area, queue
         // widgets, media), so hide targets grow into whole page chunks and strip the page —
-        // including its screenshots. Hide only inside "More Like This" there; badges unaffected.
-        if (APP_PAGE_ID && !m.el.closest('#recommended_block')) return;
+        // including its screenshots. Hide only inside the carousels of other games there ("More
+        // like this", "More from <developer>", mods); badges unaffected. The live page mounts
+        // each of those into a data-featuretarget="…-carousel" div; #recommended_block is the
+        // older server-rendered "More Like This".
+        if (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) return;
         const t = hideTarget(m.el, m.kind, m.id, m.name);
         // A re-render can move the card boundary — a wrapper we absorbed may since have gained
         // another game. Drop the old tag so the previous target doesn't stay hidden with it.
@@ -716,6 +721,9 @@
     const fresh = el => !seen.has(el);
     const skip = el => { seen.add(el); el.dataset.sgai = 'skip'; };
 
+    // What a capsule is built from, image or not; a plain text link has none of it.
+    const CAPSULE_PARTS = 'div, picture, video, source, svg, [style*="background"]';
+
     function* candidates() {
         // Discovery Queue & similar "app video" cards: badge the prominent video/capsule area. It has
         // no /app/ link inside — resolve the appid from its capsule image / trailer URL. Yielded first
@@ -737,8 +745,10 @@
             if (m && a.querySelector('img')) yield { el: a, id: m[1] };                // a capsule, not a text link
             // Review links, breadcrumbs, "more like this" text links: never capsules, and there
             // are thousands of them on a search page. Unmarked, every one was re-tested on every
-            // mutation batch. An empty anchor is left alone — it may still be waiting for its image.
-            else if (a.textContent.trim()) skip(a);
+            // mutation batch. Only an anchor that is nothing but text is written off: React
+            // capsules (app-page carousels, sale rows) render their price before their lazy
+            // image, and skipping one in that gap left it unscanned for good.
+            else if (a.textContent.trim() && !a.querySelector(CAPSULE_PARTS)) skip(a);
         }
         // Legacy #global_hover tooltip: no app link or capsule <img>; appid is in the element id.
         for (const h of document.querySelectorAll('[id^="hover_app_"]')) {
