@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.16
+// @version      2.17
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -100,7 +100,10 @@
         .sgai_badge{display:inline-block;font:700 11px/1 "Motiva Sans",Arial,sans-serif;
             letter-spacing:.7px;text-transform:uppercase;color:${ACCENT};background:rgba(0,0,0,.85);
             border-radius:2px;padding:4px 5px;vertical-align:middle;white-space:nowrap;}
-        .sgai_title{margin-left:10px;font-size:12px;padding:5px 7px;cursor:pointer;}
+        /* Centred on the name's capitals, not on x-height (which "middle" uses and which sits low
+           beside a mostly-capital title): 26px Motiva caps are 18px tall, and this chip's own
+           caps sit 4.5px above its baseline: lift 9 - 4.5, plus .5 measured in Chrome. */
+        .sgai_title{margin-left:10px;font-size:12px;padding:5px 7px;cursor:pointer;vertical-align:5px;}
         .sgai_title:hover{color:#fff;}
         .sgai_cap{position:absolute;top:4px;left:4px;z-index:50;}
         /* A corner badge sits over the capsule's link: let clicks through, or it is a dead zone
@@ -125,9 +128,9 @@
            after its heading, drawn here so the heading's text is left untouched. */
         .sgai_disclosure{border-left:3px solid ${ACCENT};padding-left:12px;
             background:rgba(255,206,92,.05);border-radius:0 2px 2px 0;}
-        .sgai_dh::after{content:"AI";display:inline-block;margin-left:10px;padding:4px 5px;
+        .sgai_dh::after{content:"AI";display:inline-block;margin-left:10px;padding:3px 5px;
             font:700 11px/1 "Motiva Sans",Arial,sans-serif;letter-spacing:.7px;text-transform:uppercase;
-            color:${ACCENT};background:rgba(0,0,0,.85);border-radius:2px;vertical-align:middle;}
+            color:${ACCENT};background:rgba(0,0,0,.85);border-radius:2px;vertical-align:1px;}  /* caps 10px: 5 - 4 */
         /* Title badge clicked: pulse the box twice, starting once the scroll has mostly landed. */
         .sgai_flash{animation:sgai_flash .9s ease-in-out .35s 2;}
         @keyframes sgai_flash{50%{background:rgba(255,206,92,.22);box-shadow:0 0 0 3px rgba(255,206,92,.55);}}
