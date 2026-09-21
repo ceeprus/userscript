@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.15
+// @version      2.16
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -121,6 +121,16 @@
             border:2px solid rgba(255,255,255,.25);border-top-color:${ACCENT};border-radius:50%;
             animation:sgai_spin .8s linear infinite;}
         @keyframes sgai_spin{to{transform:rotate(360deg);}}
+        /* Steam's own disclosure box on a game's page: an amber bar and tint, and the same AI chip
+           after its heading, drawn here so the heading's text is left untouched. */
+        .sgai_disclosure{border-left:3px solid ${ACCENT};padding-left:12px;
+            background:rgba(255,206,92,.05);border-radius:0 2px 2px 0;}
+        .sgai_dh::after{content:"AI";display:inline-block;margin-left:10px;padding:4px 5px;
+            font:700 11px/1 "Motiva Sans",Arial,sans-serif;letter-spacing:.7px;text-transform:uppercase;
+            color:${ACCENT};background:rgba(0,0,0,.85);border-radius:2px;vertical-align:middle;}
+        /* Title badge clicked: pulse the box twice, starting once the scroll has mostly landed. */
+        .sgai_flash{animation:sgai_flash .9s ease-in-out .35s 2;}
+        @keyframes sgai_flash{50%{background:rgba(255,206,92,.22);box-shadow:0 0 0 3px rgba(255,206,92,.55);}}
         [data-sgai-mode="skip"] .sgai_cap{display:none !important;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
@@ -230,12 +240,13 @@
     }
 
     /* ---------------- parse disclosure out of a document ---------------- */
-    function getDisclosure(root) {
+    // The disclosure's heading and the box around it, or null.
+    function findDisclosure(root) {
         // Collapse whitespace before matching: a heading Steam's template wrapped across source
         // lines, or one holding a non-breaking space, is the same heading.
         const flat = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
         const h2 = [...root.querySelectorAll('h2')].find(h => TITLE_SET.has(flat(h)));
-        if (!h2) return { ai: false, text: null };
+        if (!h2) return null;
         // Steam's own disclosure sits in the content-descriptors block. The same heading outside
         // it is a developer's [h2] in their store description, where the "box" would be the whole
         // page — that scored a false positive and swept 45 KB of description into the badge
@@ -243,8 +254,15 @@
         let box = h2.closest('#game_area_content_descriptors');
         if (!box) {
             box = h2.parentElement;
-            if (!box || box.textContent.length > 2000) return { ai: false, text: null };
+            if (!box || box.textContent.length > 2000) return null;
         }
+        return { h2, box };
+    }
+
+    function getDisclosure(root) {
+        const found = findDisclosure(root);
+        if (!found) return { ai: false, text: null };
+        const { h2, box } = found;
         let text = '';
         box.childNodes.forEach(n => { if (n !== h2) text += (n.textContent || '') + ' '; });
         text = text.replace(/\s+/g, ' ').trim();
@@ -505,13 +523,37 @@
     function titleBadge(text) {
         const t = document.querySelector('#appHubAppName, .apphub_AppName');
         if (!t || t.querySelector('.sgai_title')) return;
-        const b = makeBadge(text || 'This game discloses AI generated content');
+        const b = makeBadge(`${text || 'This game discloses AI generated content'}\n\nClick to jump to the disclosure.`);
         b.classList.add('sgai_title');
         b.addEventListener('click', e => {
             e.preventDefault();
-            document.querySelector('#game_area_content_descriptors')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const box = markDisclosure();
+            if (!box) return;
+            const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            box.scrollIntoView({ behavior: still ? 'auto' : 'smooth', block: 'center' });
+            // Restart the pulse on every click: drop the class, force a style flush, add it back.
+            box.classList.remove('sgai_flash');
+            void box.offsetWidth;
+            box.classList.add('sgai_flash');
         });
         t.appendChild(b);
+    }
+
+    // Tag Steam's own disclosure box so it stands out: an amber bar down its side, and our AI chip
+    // after its heading. The chip is drawn by CSS (::after) rather than inserted, so the heading's
+    // text stays exactly Steam's — findDisclosure() matches on it, and so may other scripts.
+    function markDisclosure() {
+        const found = findDisclosure(document);
+        if (!found) return null;
+        found.box.classList.add('sgai_disclosure');
+        found.h2.classList.add('sgai_dh');
+        if (!found.box.dataset.sgaiFlashHook) {
+            found.box.dataset.sgaiFlashHook = '1';
+            found.box.addEventListener('animationend', e => {
+                if (e.animationName === 'sgai_flash') found.box.classList.remove('sgai_flash');
+            });
+        }
+        return found.box;
     }
 
     const managed = [];   // badges we've placed, re-asserted if a React re-render strips them
@@ -899,7 +941,7 @@
             const d = getDisclosure(document);
             d.name = appName(document);
             cacheSet(APP_PAGE_ID, d);
-            if (d.ai) titleBadge(d.text);
+            if (d.ai) { markDisclosure(); titleBadge(d.text); }
             appPageRead = true;
         } catch (e) { console.warn('[SteamGameAI] could not read this app page', e); }
     }
