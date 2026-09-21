@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.13
+// @version      2.14
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -946,11 +946,48 @@
             e.preventDefault();
             setMode(nextMode());
         });
-        const host = findEyeHost();
-        if (host) host.prepend(eye);
-        else { eye.classList.add('sgai_eye_float'); document.body.appendChild(eye); }
+        dockEye();
+    }
+
+    // Is the button actually where a person can see and click it? Steam's header is not ours and
+    // can clip, collapse or cover what we put in it, and a button that exists in the DOM but not
+    // on screen is the same as no button at all.
+    function eyeVisible() {
+        if (!eye || !eye.isConnected) return false;
+        const cs = getComputedStyle(eye);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return false;
+        const r = eye.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) return false;                       // collapsed or clipped
+        if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) return false;
+        const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+        return !!hit && (hit === eye || eye.contains(hit));                  // or something covers it
+    }
+
+    // Prefer the header; fall back to the corner — but only after checking, and only after giving
+    // the header a fair chance to finish laying itself out. A header that is merely late looks
+    // exactly like one that swallowed the button, so the difference is decided by retrying rather
+    // than by guessing from its box.
+    const DOCK_TRIES = 3, DOCK_RETRY_MS = 500;
+    let dockFailed = false, dockTries = 0, dockTimer = 0;
+    function dockEye() {
+        const host = dockFailed ? null : findEyeHost();
+        if (host) {
+            eye.classList.remove('sgai_eye_float');
+            host.prepend(eye);
+            syncEye();
+            alignEye();
+            if (eyeVisible()) { dockTries = 0; return; }
+            if (++dockTries < DOCK_TRIES) {                  // still settling? look again shortly
+                if (!dockTimer) dockTimer = setTimeout(() => { dockTimer = 0; dockEye(); }, DOCK_RETRY_MS);
+                return;
+            }
+            dockFailed = true;                               // the header is real, and it hid us
+            console.warn('[SteamGameAI] the header will not show the eye button; moving it to the corner');
+        }
+        eye.classList.add('sgai_eye_float');
+        setEyeShift(0);
+        document.body.appendChild(eye);
         syncEye();
-        alignEye();
     }
 
     // The header lays its items out with floats, which stack from the top edge — our button is
