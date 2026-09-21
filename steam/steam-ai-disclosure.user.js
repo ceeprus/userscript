@@ -1,22 +1,24 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.12
+// @version      2.13
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
+// @icon         data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='10'%20fill='%23171a21'/%3E%3Ctext%20x='32'%20y='43'%20font-family='Arial,sans-serif'%20font-size='30'%20font-weight='bold'%20fill='%23ffce5c'%20text-anchor='middle'%3EAI%3C/text%3E%3C/svg%3E
 // @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
 // @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
 // @supportURL   https://github.com/ceeprus/userscript/issues
 // @match        https://store.steampowered.com/*
 // @run-at       document-idle
+// @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_info
 // @license      MIT
 // ==/UserScript==
 
@@ -65,7 +67,11 @@
         syncEye();
     }
     applyMode();
-    const APP_PAGE_ID = (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;  // viewing a game's own page
+    // Steam's React pages navigate with pushState, so this is not fixed for the life of the tab.
+    // It has to be re-read: on a game's own page hide and blur are restricted to "More Like This",
+    // and carrying that restriction to the next page left the filter silently doing nothing.
+    const appIdFromPath = () => (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;
+    let APP_PAGE_ID = appIdFromPath();
 
     // Named in every badge tooltip, so a screenshot in a bug report says which build made it.
     const INFO = (typeof GM_info !== 'undefined' && GM_info.script) || {};
@@ -96,7 +102,13 @@
             border-radius:2px;padding:4px 5px;vertical-align:middle;white-space:nowrap;}
         .sgai_title{margin-left:10px;font-size:12px;padding:5px 7px;cursor:pointer;}
         .sgai_title:hover{color:#fff;}
-        .sgai_cap{position:absolute;top:4px;left:4px;z-index:50;pointer-events:auto;}
+        .sgai_cap{position:absolute;top:4px;left:4px;z-index:50;}
+        /* A corner badge sits over the capsule's link: let clicks through, or it is a dead zone
+           on the very corner of every flagged game. The inline and description badges sit beside
+           text rather than over it, so they keep their tooltip. */
+        .sgai_cap:not(.sgai_inline):not(.sgai_desc){pointer-events:none;}
+        /* Steam's IN LIBRARY / WISHLISTED ribbon owns this corner when it is there. */
+        .sgai_cap.sgai_under_flag{top:28px;}
         .sgai_inline{position:static;margin-left:8px;cursor:default;}
         .sgai_desc{position:static;margin-top:8px;}
         .sgai_host{position:relative;}
@@ -145,7 +157,7 @@
     function stylesLive() {
         const t = document.createElement('span');
         t.className = 'sgai_badge';
-        document.body.appendChild(t);
+        (document.body || document.documentElement).appendChild(t);
         const ok = getComputedStyle(t).letterSpacing === '0.7px';   // set only by our own rule
         t.remove();
         return ok;
@@ -371,15 +383,60 @@
         return b;
     }
 
-    // One badge per card: hover-preview popups (and some widgets) contain several links to the
-    // same app — media block, header capsule, title. Claim the smallest ancestor that groups more
-    // than one link to this app id, so only the first capsule in it gets marked. Returns false
-    // when this card was already claimed under `attr`.
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const capsuleAlt = el => {
+        const img = el.matches('img') ? el : el.querySelector('img[alt]:not([alt=""])');
+        return (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
+    };
+
+    // The appid an element itself stands for — exact, never a substring: "/app/700330" must not
+    // read as app 70.
+    function appIdOf(el) {
+        if (!el || !el.getAttribute) return null;
+        const d = (el.getAttribute('data-ds-appid') || '').trim();
+        if (/^\d+$/.test(d)) return d;
+        const m = (el.getAttribute('href') || '').match(/\/app\/(\d+)/);
+        return m ? m[1] : null;
+    }
+    // Our badge needs a positioned host, but Steam positions its own overlays (the IN LIBRARY
+    // ribbon, discount chips) against these same boxes — adding a containing block where one was
+    // missing moves them, measurably by hundreds of pixels. So: only add the class when it is
+    // really needed, remember that we added it, and take it away again when our badge goes.
+    // A detached node reports every computed property as '' — that means "not laid out yet",
+    // not "static", and placing against it would anchor the badge to some far-off ancestor.
+    function ensureHost(el) {
+        if (!el || !el.isConnected) return false;
+        if (el.dataset.sgaiHosted) return true;
+        const pos = getComputedStyle(el).position;
+        if (pos === '') return false;
+        if (pos === 'static') { el.classList.add('sgai_host'); el.dataset.sgaiHosted = '1'; }
+        return true;
+    }
+    function releaseHost(el) {
+        if (!el || !el.dataset || !el.dataset.sgaiHosted) return;
+        if (el.querySelector(':scope > .sgai_cap')) return;   // another badge still needs it
+        el.classList.remove('sgai_host');
+        delete el.dataset.sgaiHosted;
+    }
+
+    // One badge per card. A hover popup holds several links to the same app (media block, header
+    // capsule, title) and must be badged once; two separate cards for the same game in one row
+    // must be badged twice. Both fall out of the same rule: grow to the largest ancestor that
+    // still talks about nothing but this game. Another app's presence ends the card, so two cards
+    // in a mixed row each claim only themselves, while everything inside one popup is one claim.
     function claimCard(el, id, attr) {
-        if (el.closest(`[${attr}~="${id}"]`)) return false;
+        const prior = el.closest(`[${attr}~="${id}"]`);
+        if (prior) {
+            // A claim whose badge did not survive a re-render is stale; honouring it would
+            // suppress this card's badge for the rest of the session.
+            if (prior.querySelector('.sgai_cap')) return false;
+            const left = (prior.getAttribute(attr) || '').split(/\s+/).filter(x => x && x !== id);
+            left.length ? prior.setAttribute(attr, left.join(' ')) : prior.removeAttribute(attr);
+        }
         let root = el;
-        for (let n = el.parentElement, i = 0; n && i < 8; n = n.parentElement, i++) {
-            if (n.querySelectorAll(`a[href*="/app/${id}"]`).length > 1) { root = n; break; }
+        for (let n = el.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
+            if (foreignApp(n, id)) break;
+            root = n;
         }
         const claimed = (root.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
         if (!claimed.includes(id)) { claimed.push(id); root.setAttribute(attr, claimed.join(' ')); }
@@ -392,9 +449,8 @@
     // (Idea from seeeeew/aiwarningforsteam, which throbbers its pending search rows.)
     function checkBadge(el, on) {
         const had = el.querySelector(':scope > .sgai_check');
-        if (!on) { if (had) had.remove(); return; }
-        if (!filtering() || had) return;
-        if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
+        if (!on) { if (had) { had.remove(); releaseHost(el); } return; }
+        if (!filtering() || had || !ensureHost(el)) return;
         const b = document.createElement('span');
         b.className = 'sgai_badge sgai_cap sgai_check';
         b.title = `Checking for an AI Generated Content Disclosure…
@@ -410,7 +466,7 @@
         if (!filtering() || !el.isConnected) return;
         if (badgeKind(el) === 'desc') return;                    // the capsule of this card carries it
         if (!claimCard(el, id, 'data-sgai-err')) return;
-        if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
+        if (!ensureHost(el)) return;
         const b = makeBadge(`AI disclosure check failed for app ${id} — this game was not verified`);
         b.classList.add('sgai_cap', 'sgai_err');
         b.textContent = 'AI?';
@@ -431,94 +487,134 @@
 
     const managed = [];   // badges we've placed, re-asserted if a React re-render strips them
 
-    function placeBadge(el, kind, text) {
-        if (kind === 'title') {                                  // hover tooltip / homepage preview: next to title
-            const target = el.matches('.hover_title, .tab_title') ? el : el.querySelector('.hover_title, .tab_title');
-            if (!target || target.querySelector('.sgai_cap')) return;
-            const b = makeBadge(text); b.classList.add('sgai_cap', 'sgai_inline'); target.appendChild(b);
-        } else if (kind === 'desc') {                           // sale widget: its own line under the description
-            if (el.nextElementSibling && el.nextElementSibling.classList.contains('sgai_cap')) return;
-            const b = makeBadge(text); b.classList.add('sgai_cap', 'sgai_desc');
-            el.after(b);
-        } else {                                                 // capsule corner overlay
-            if (el.querySelector(':scope > .sgai_cap')) return;
-            if (getComputedStyle(el).position === 'static') el.classList.add('sgai_host');
-            const b = makeBadge(text); b.classList.add('sgai_cap'); el.appendChild(b);
-        }
-    }
-
     function badgeKind(el) {
         if (el.matches('.hover_title, .tab_preview') || el.querySelector('.hover_title, .tab_title')) return 'title';
         if (el.matches('.StoreSaleWidgetShortDesc')) return 'desc';
         return 'corner';
     }
 
+    // Where a corner badge belongs. In blur mode that is the card itself: the blur is a filter on
+    // the hide target, and a CSS filter applies to the whole subtree, so a badge sitting inside
+    // the target gets blurred with it no matter how the rule is written. Sitting ON the target,
+    // it is a direct child and the :not(.sgai_cap) exemption can keep it sharp.
+    const badgeHost = m => (MODE === 'blur' && m.target && m.target.isConnected) ? m.target : m.el;
+
+    function placedOk(m) {
+        if (!m.node || !m.node.isConnected) return false;
+        if (m.kind === 'desc') return m.node.previousElementSibling === m.el;
+        if (m.kind === 'title') return !!m.node.parentElement?.matches('.hover_title, .tab_title');
+        return m.node.parentElement === badgeHost(m);
+    }
+
+    // Always moves the badge this entry already owns rather than building another one: the old
+    // "is there one next to me?" test failed as soon as Steam re-rendered something in
+    // between, and every re-render added one more badge.
+    function placeBadge(m) {
+        if (!m.node) m.node = makeBadge(m.text);
+        if (m.kind === 'title') {
+            const t = m.el.matches('.hover_title, .tab_title') ? m.el : m.el.querySelector('.hover_title, .tab_title');
+            if (!t) { m.kind = 'corner'; return placeBadge(m); }   // a preview with no title node
+            m.node.classList.add('sgai_cap', 'sgai_inline');
+            t.appendChild(m.node);
+            return;
+        }
+        if (m.kind === 'desc') {
+            m.node.classList.add('sgai_cap', 'sgai_desc');
+            m.el.after(m.node);
+            return;
+        }
+        const host = badgeHost(m);
+        if (!ensureHost(host)) return;
+        m.node.classList.add('sgai_cap');
+        // Steam draws its own IN LIBRARY / WISHLISTED ribbon in this corner; sit below it rather
+        // than hide what the user already owns.
+        m.node.classList.toggle('sgai_under_flag', !!host.querySelector('.ds_flag'));
+        host.appendChild(m.node);
+        if (m.host && m.host !== host) releaseHost(m.host);
+        m.host = host;
+    }
+
+    /* ---------------- what blur and hide act on ---------------- */
     // The element blur and hide mode act on — the game's whole card, not just the capsule
     // anchor. In the React store layouts (home sale widgets, /sale/ pages) the /app/
     // anchor is only the capsule image; the title, tags, description and buttons are siblings,
-    // so we grow outward from the capsule. Three things stop that growth, in order:
+    // so we grow outward from the capsule. Growth stops at, in order:
     //   • a container holding another game (foreignApp) — keeps carousel slides and grids safe;
+    //   • a container that adds a heading of its own — a heading belongs to a page section, not
+    //     to one game's card, and this is what stops "Half-Life Franchise" or "Controller-friendly
+    //     picks" taking their whole section with them;
     //   • a container named for this app (appScoped) — that is exactly one game's card;
-    //   • an ancestor that adds text of its own: if it adds this game's name it is the card and
-    //     we take it, otherwise the text belongs to the page (a calendar date, a section
-    //     heading, curator navigation) and the card ended one level below.
-    // Ancestors that add no text at all are pure layout wrappers and get absorbed, so hiding a
-    // game doesn't leave an empty slot behind in a grid.
-    //
-    // HIDE_STOP is the backstop: page shells that are never a game card, so even a layout none
-    // of the rules above fit can't cost the page its own chrome. .page_content_ctn and
-    // .creator_grid_ctn are the curator/creator page bodies; the rest are the store-wide frame.
+    //   • text that isn't this game's: a calendar date, a section label, curator navigation.
+    // Once an ancestor has been recognised as this game's card, the rows below it (price, tags,
+    // buttons) are card too and get absorbed — otherwise hiding leaves "-50% $4.99" behind.
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
         '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn';
+
+    const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Word-boundary, so the game "Control" is not found inside "Controller-friendly picks".
+    const namesGame = (text, want) => new RegExp(`(^|\\W)${escapeRe(want)}(\\W|$)`).test(text);
+    // The text an ancestor adds beyond what we already have; t's text is contiguous inside it.
+    function addedText(n, t) {
+        const full = norm(n.textContent), inner = norm(t.textContent);
+        if (!inner) return full;
+        const i = full.indexOf(inner);
+        return (i === -1 ? full : full.slice(0, i) + ' ' + full.slice(i + inner.length)).trim();
+    }
+    const headingOutside = (n, t) => [...n.querySelectorAll('h1,h2,h3,h4,h5,h6')].some(h => !t.contains(h));
+    // Last-resort backstop: nothing that fills the screen is one game's card.
+    function pageSized(n) {
+        const r = n.getBoundingClientRect();
+        return r.height > innerHeight * 0.8 && r.width > innerWidth * 0.9;
+    }
+
     function hideTarget(el, kind, id, name) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
-        let scoped = false;                                  // saw a container named for this app
-        const want = norm(name) || norm(capsuleAlt(t));       // this game's name, for the card test
-        let named = !!want && norm(t.textContent).includes(want);
+        const want = norm(name) || norm(capsuleAlt(t));
+        // With no name we cannot tell this game's card from the page around it. Hiding a guess
+        // would strand half a card or eat a section, so filter nothing and leave the badge.
+        if (!want) return null;
+        let named = namesGame(norm(t.textContent), want), scoped = false;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
+            if (headingOutside(n, t)) break;
+            if (pageSized(n)) break;
             if (appScoped(n, id)) { t = n; scoped = true; continue; }
             if (scoped) break;                               // past that container: page furniture
-            if (norm(n.textContent) !== norm(t.textContent)) {   // this ancestor adds text of its own
-                if (named || !want) break;                   // not this game's: a label, heading, nav
-                if (!norm(n.textContent).includes(want)) break;
-                return n;                                    // the game's name: the card ends here
-            }
-            t = n;                                           // adds nothing: a wrapper, absorb it
+            const added = addedText(n, t);
+            if (!added) { t = n; continue; }                 // adds nothing: a wrapper, absorb it
+            if (named) { t = n; continue; }                  // the card's own price / tags / buttons
+            if (namesGame(added, want)) { t = n; named = true; continue; }
+            break;                                           // somebody else's text: card ended below
         }
         return t;
     }
 
-    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    const capsuleAlt = el => {
-        const img = el.matches('img') ? el : el.querySelector('img[alt]:not([alt=""])');
-        return (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
-    };
-
     // Is this container named for this app — e.g. the curator page's #app-ctn-<appid>? Such an id
-    // marks exactly one game's card, so it is the hide target and growth stops there. Without it,
-    // a page showing a single game (a curator with one recommendation, a calendar day with one
-    // release) never trips foreignApp and growth runs to the level cap, taking the page with it.
-    // Ids and data-* only: React's hashed class names carry digit runs that can collide with a
-    // short appid.
+    // marks exactly one game's card, so it is the hide target and growth stops there. Matched
+    // strictly: a container called "sale_row_400" is a sale row, not app 400's card.
     function appScoped(n, id) {
-        const s = `${n.id} ${n.getAttribute('data-ds-appid') || ''} ${n.getAttribute('data-appid') || ''}`;
-        return new RegExp(`(^|\\D)${id}(\\D|$)`).test(s);
+        if ((n.getAttribute('data-ds-appid') || '').trim() === id) return true;
+        if ((n.getAttribute('data-appid') || '').trim() === id) return true;
+        return new RegExp(`(^|[-_])app[-_]?(ctn|card|capsule|container)?[-_]?${id}($|[-_])`, 'i').test(n.id || '');
     }
 
     // Does this container reference any app other than `id`?
     function foreignApp(n, id) {
-        const own = n.getAttribute('data-ds-appid');
+        const own = (n.getAttribute('data-ds-appid') || '').trim();
         if (own && own !== id) return true;
         for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
-            const lid = l.getAttribute('data-ds-appid') || ((l.getAttribute('href') || '').match(/\/app\/(\d+)/) || [])[1];
+            const lid = appIdOf(l);
             if (lid && lid !== id) return true;
         }
         return false;
     }
 
     function markAI(m) {
+        if (!filtering()) {                                  // badge-only: nothing to mark
+            if (m.target) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); m.target = null; }
+            return;
+        }
         // On a game's own app page nearly everything references that app (purchase area, queue
         // widgets, media), so hide targets grow into whole page chunks and strip the page —
         // including its screenshots. Hide only inside "More Like This" there; badges unaffected.
@@ -526,33 +622,62 @@
         const t = hideTarget(m.el, m.kind, m.id, m.name);
         // A re-render can move the card boundary — a wrapper we absorbed may since have gained
         // another game. Drop the old tag so the previous target doesn't stay hidden with it.
-        if (m.hidden && m.hidden !== t) m.hidden.classList.remove('sgai_ai');
-        m.hidden = t || null;
+        if (m.target && m.target !== t) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); }
+        m.target = t || null;
         if (!t) return;
         // Blur mode draws its label across the card, so the card has to be the positioning
         // context; without this the label would anchor to whatever ancestor happens to be
         // positioned. Same guard we use for badge hosts: only when nothing is set already.
-        if (MODE === 'blur' && getComputedStyle(t).position === 'static') t.classList.add('sgai_host');
+        if (MODE === 'blur') ensureHost(t);
         t.classList.add('sgai_ai');
     }
 
     function capBadge(el, text, id, name) {
-        if (!claimCard(el, id, 'data-sgai-card')) return;
+        // A sale widget carries both a capsule badge and a line under its description; those are
+        // two slots on one card, not two attempts at the same one, so they claim separately.
         const kind = badgeKind(el);
-        const m = { el, kind, text, id, name, hidden: null };
-        placeBadge(el, kind, text);
-        markAI(m);
+        if (!claimCard(el, id, kind === 'desc' ? 'data-sgai-desc' : 'data-sgai-card')) return;
+        const m = { el, kind, text, id, name, node: null, host: null, target: null };
+        markAI(m);                                           // the target decides where blur puts the badge
+        placeBadge(m);
         managed.push(m);
     }
 
+    // Everything this entry put on the page, taken back off it. The scan marks go too: a card
+    // React detaches and re-attaches, or recycles for another game, has to be able to come back
+    // through scan() — otherwise it stays "already handled" and never gets a badge again.
+    function detach(m) {
+        if (m.node) m.node.remove();
+        if (m.host) releaseHost(m.host);
+        if (m.target) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); }
+        seen.delete(m.el);
+        try { delete m.el.dataset.sgai; delete m.el.dataset.sgaiId; } catch (e) { /* not an element any more */ }
+        for (const a of ['data-sgai-card', 'data-sgai-desc', 'data-sgai-err']) {
+            const holder = m.el.closest?.(`[${a}~="${m.id}"]`);
+            if (!holder) continue;
+            const left = (holder.getAttribute(a) || '').split(/\s+/).filter(x => x && x !== m.id);
+            left.length ? holder.setAttribute(a, left.join(' ')) : holder.removeAttribute(a);
+        }
+    }
+
     // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
-    // popup media slideshow drops our node every time the trailer loops). Prunes dead hosts.
-    function heal() {
+    // popup media slideshow drops our node every time the trailer loops). Prunes dead hosts, and
+    // drops entries whose node has been recycled for a different game — a virtualized list reuses
+    // the same element, and a stale mark would badge an innocent game for good.
+    //
+    // Runs on every mutation batch, so the steady-state path is deliberately cheap: an entry that
+    // is still where we put it costs two isConnected checks and nothing else. Re-deriving the
+    // hide target walks ancestors and queries their subtrees, which on a long search page is what
+    // turned this into half a second of blocked main thread per batch.
+    function heal(force) {
         for (let i = managed.length - 1; i >= 0; i--) {
             const m = managed[i];
-            if (!m.el.isConnected) { managed.splice(i, 1); continue; }
-            placeBadge(m.el, m.kind, m.text);
-            markAI(m);
+            if (!m.el.isConnected) { detach(m); managed.splice(i, 1); continue; }
+            const own = appIdOf(m.el);
+            if (own && own !== m.id) { detach(m); managed.splice(i, 1); continue; }
+            const moved = !placedOk(m);
+            if (force || moved) { markAI(m); placeBadge(m); }
+            else if (filtering() && (!m.target || !m.target.isConnected)) { markAI(m); placeBadge(m); }
         }
     }
 
@@ -583,39 +708,57 @@
     //     wraps an <img> — so we match that structurally instead of chasing capsule class names
     //     (CapsuleImageCtn, HeroCapsuleImageContainer, ...). Anything already covered by
     //     data-ds-appid is skipped to avoid double-badging.
+    // Which nodes have already been through the scanner. Kept off the DOM on purpose: an
+    // attribute is copied by cloneNode, so a page that clones a card hands us a "already done"
+    // node that never gets a badge. Object identity cannot be cloned. data-sgai is still written
+    // alongside, purely so the state is visible when inspecting the page.
+    const seen = new WeakSet();
+    const fresh = el => !seen.has(el);
+    const skip = el => { seen.add(el); el.dataset.sgai = 'skip'; };
+
     function* candidates() {
         // Discovery Queue & similar "app video" cards: badge the prominent video/capsule area. It has
         // no /app/ link inside — resolve the appid from its capsule image / trailer URL. Yielded first
         // so it wins the per-card de-dupe over the smaller capsule link elsewhere in the card.
-        for (const v of document.querySelectorAll('.AppVideoCtn:not([data-sgai])')) {
+        for (const v of document.querySelectorAll('.AppVideoCtn')) {
+            if (!fresh(v)) continue;
             const id = widgetAppId(v);
-            if (id) yield { el: v, id }; else v.dataset.sgai = 'skip';
+            if (id) yield { el: v, id }; else skip(v);
         }
-        for (const el of document.querySelectorAll('[data-ds-appid]:not([data-sgai])')) {
+        for (const el of document.querySelectorAll('[data-ds-appid]')) {
+            if (!fresh(el)) continue;
             const id = el.dataset.dsAppid;
-            if (/^\d+$/.test(id || '')) yield { el, id }; else el.dataset.sgai = 'skip';
+            if (/^\d+$/.test(id || '')) yield { el, id }; else skip(el);
         }
-        for (const a of document.querySelectorAll('a[href*="/app/"]:not([data-sgai])')) {
-            if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { a.dataset.sgai = 'skip'; continue; }  // data-ds-appid path handles these
+        for (const a of document.querySelectorAll('a[href*="/app/"]')) {
+            if (!fresh(a)) continue;
+            if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { skip(a); continue; }  // data-ds-appid path handles these
             const m = a.getAttribute('href').match(/\/app\/(\d+)/);
             if (m && a.querySelector('img')) yield { el: a, id: m[1] };                // a capsule, not a text link
+            // Review links, breadcrumbs, "more like this" text links: never capsules, and there
+            // are thousands of them on a search page. Unmarked, every one was re-tested on every
+            // mutation batch. An empty anchor is left alone — it may still be waiting for its image.
+            else if (a.textContent.trim()) skip(a);
         }
         // Legacy #global_hover tooltip: no app link or capsule <img>; appid is in the element id.
-        for (const h of document.querySelectorAll('[id^="hover_app_"]:not([data-sgai])')) {
+        for (const h of document.querySelectorAll('[id^="hover_app_"]')) {
+            if (!fresh(h)) continue;
             const m = h.id.match(/^hover_app_(\d+)$/);
-            if (m) yield { el: h, id: m[1] }; else h.dataset.sgai = 'skip';
+            if (m) yield { el: h, id: m[1] }; else skip(h);
         }
         // Expanded sale widget: add the marker on its own line under the short description, where
         // it's easy to spot. The description has no app link — resolve the id from the widget.
-        for (const desc of document.querySelectorAll('.StoreSaleWidgetShortDesc:not([data-sgai])')) {
+        for (const desc of document.querySelectorAll('.StoreSaleWidgetShortDesc')) {
+            if (!fresh(desc)) continue;
             const id = widgetAppId(desc);
-            if (id) yield { el: desc, id }; else desc.dataset.sgai = 'skip';
+            if (id) yield { el: desc, id }; else skip(desc);
         }
         // Homepage right-column preview panel: title + trailer, but no app link/appid — the id is
         // only in the screenshot/trailer asset URLs, so resolve it the same way as sale widgets.
-        for (const p of document.querySelectorAll('.tab_preview:not([data-sgai])')) {
+        for (const p of document.querySelectorAll('.tab_preview')) {
+            if (!fresh(p)) continue;
             const id = widgetAppId(p);
-            if (id) yield { el: p, id }; else p.dataset.sgai = 'skip';
+            if (id) yield { el: p, id }; else skip(p);
         }
     }
 
@@ -639,6 +782,7 @@
 
     function scan() {
         for (const { el, id } of candidates()) {
+            seen.add(el);
             el.dataset.sgaiId = id;
             el.dataset.sgai = 'pending';
             io.observe(el);
@@ -647,18 +791,51 @@
 
     // The observer runs in every mode: even in 'skip' it keeps the eye docked, and it re-asserts
     // badges that a React re-render dropped.
-    let pending = false;
-    const rescan = () => {
-        if (pending) return;
-        pending = true;
-        requestAnimationFrame(() => {
-            pending = false;
-            if (MODE !== 'skip') scan();
-            heal();
-            ensureEye();
-        });
-    };
-    if (document.body) new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
+    //
+    // Pacing matters more than it looks. Steam's home and sale pages animate — a carousel mutates
+    // about once a frame — and a rescan tied to the animation frame then sweeps the whole document
+    // up to sixty times a second, measured at roughly a fifth of a CPU core with the fan to match.
+    // So: ignore batches that are only our own nodes moving, run the first real change straight
+    // away, coalesce the rest onto a trailing timer, and lengthen that timer while nothing comes
+    // of it. A quiet page settles to nothing; a busy one costs four sweeps a second.
+    const SETTLE_MS = 250, IDLE_MS = 1000, IDLE_AFTER = 10;
+    let timer = 0, lastRun = 0, fruitless = 0;
+
+    const ourNode = n => n.nodeType === 1 &&
+        (n.classList.contains('sgai_badge') || n.classList.contains('sgai_eye') || n.closest('.sgai_eye'));
+    function worthLooking(records) {
+        if (!records) return true;
+        for (const r of records) {
+            if (r.target.nodeType === 1 && ourNode(r.target)) continue;
+            for (const n of r.addedNodes) if (n.nodeType === 1 && !ourNode(n)) return true;
+            for (const n of r.removedNodes) if (n.nodeType === 1 && !ourNode(n)) return true;
+        }
+        return false;                                        // text ticking over, or just us
+    }
+
+    function sweep() {
+        timer = 0;
+        lastRun = performance.now();
+        const had = managed.length;
+        if (MODE !== 'skip') scan();
+        heal();
+        ensureEye();
+        readAppPage();                                       // still waiting on a pushState arrival
+        fruitless = managed.length === had ? fruitless + 1 : 0;
+    }
+
+    function rescan(records) {
+        if (timer || !worthLooking(records)) return;
+        if (document.hidden) return;                         // nothing to see; visibilitychange rearms
+        const wait = fruitless > IDLE_AFTER ? IDLE_MS
+                   : (performance.now() - lastRun > SETTLE_MS ? 0 : SETTLE_MS);
+        timer = setTimeout(sweep, wait);
+    }
+    addEventListener('visibilitychange', () => { if (!document.hidden) rescan(null); });
+    // documentElement, not body: a page that replaces its whole body would otherwise leave the
+    // observer bound to a node nothing is attached to any more, and nothing would ever rescan.
+    const pageObserver = new MutationObserver(rescan);
+    pageObserver.observe(document.documentElement, { childList: true, subtree: true });
     if (MODE !== 'skip') scan();
     // Prune expired rows once a day, when the page has nothing better to do.
     (window.requestIdleCallback || (fn => setTimeout(fn, 5000)))(() => {
@@ -669,18 +846,46 @@
     // Only seed from a page that really is the game's store page. Steam serves its age check and
     // its region/unavailable notices at the same /app/<id>/ URL, and those parse as "no
     // disclosure" — seeding from one would overwrite a correct hit with a wrong miss for a week.
-    if (APP_PAGE_ID) {
+    // A pushState arrives before the page it navigates to has rendered, so this cannot be a
+    // one-shot: it stays pending until the app page's own markup actually turns up, and the
+    // sweep retries it. Gated and unavailable pages never satisfy it, which is the point.
+    let appPageRead = false;
+    function readAppPage() {
+        if (!APP_PAGE_ID || appPageRead) return;
         try {
             const gated = document.querySelector('#app_agegate, .agegate_birthday_selector, .agegate_text_container');
             const real = document.querySelector('#appHubAppName, .apphub_AppName');
-            if (real && !gated) {
-                const d = getDisclosure(document);
-                d.name = appName(document);
-                cacheSet(APP_PAGE_ID, d);
-                if (d.ai) titleBadge(d.text);
-            }
+            if (!real || gated) return;
+            const d = getDisclosure(document);
+            d.name = appName(document);
+            cacheSet(APP_PAGE_ID, d);
+            if (d.ai) titleBadge(d.text);
+            appPageRead = true;
         } catch (e) { console.warn('[SteamGameAI] could not read this app page', e); }
     }
+    readAppPage();
+
+    // A pushState is the only signal that the page became a different page. Re-read what depends
+    // on the path, then re-assert every badge: what counts as a card, and whether hiding is
+    // allowed at all, are decided differently on a game's own page.
+    function onNavigate() {
+        const now = appIdFromPath();
+        if (now === APP_PAGE_ID) return;
+        APP_PAGE_ID = now;
+        appPageRead = false;
+        readAppPage();
+        heal(true);
+    }
+    for (const name of ['pushState', 'replaceState']) {
+        const real = history[name];
+        if (typeof real !== 'function') continue;
+        history[name] = function (...args) {
+            const out = real.apply(this, args);
+            try { onNavigate(); } catch (e) { console.warn('[SteamGameAI] navigation hook failed', e); }
+            return out;
+        };
+    }
+    addEventListener('popstate', onNavigate);
 
     /* ---------------- eye toggle in Steam's global header ---------------- */
     // One control for every mode, on the page itself — the same eye the VRChat script uses, so
@@ -705,6 +910,11 @@
         eye.title = `AI disclosure: ${EYE[MODE].label}\nClick to cycle — next: ${EYE[nextMode()].label}\n\n— ${SIGNATURE}`;
     }
 
+    // A selector list returns the first match in DOCUMENT order, and #global_header .content is an
+    // ancestor of both other hosts — it would always win, so the candidates are tried in order.
+    const findEyeHost = () => ['#global_action_menu', '#global_actions', '#global_header .content']
+        .map(sel => document.querySelector(sel)).find(Boolean);
+
     // The header is server-rendered, but a React page can re-render around it; rescan() calls this
     // so a dropped button comes back.
     function ensureEye() {
@@ -712,8 +922,19 @@
         // pushes the store's own content down the page — measured at ~900px, which drops every
         // capsule out of the observer's reach. A missing button beats a broken page.
         if (!STYLES_OK) return;
-        if (eye && eye.isConnected) return;
+        if (eye && eye.isConnected) {
+            // A React layout can render its header after we gave up and floated the button in the
+            // corner. Take the header now rather than sit on top of it for the rest of the session.
+            if (!eye.classList.contains('sgai_eye_float')) return;
+            const late = findEyeHost();
+            if (!late) return;
+            eye.classList.remove('sgai_eye_float');
+            late.prepend(eye);
+            alignEye();
+            return;
+        }
         eye = document.createElement('div');
+        lastShift = null;                                    // fresh element, nothing applied yet
         eye.className = 'sgai_eye';
         eye.setAttribute('role', 'button');
         eye.setAttribute('tabindex', '0');
@@ -723,8 +944,7 @@
             e.preventDefault();
             setMode(nextMode());
         });
-        const host = ['#global_action_menu', '#global_actions', '#global_header .content']
-            .map(sel => document.querySelector(sel)).find(Boolean);
+        const host = findEyeHost();
         if (host) host.prepend(eye);
         else { eye.classList.add('sgai_eye_float'); document.body.appendChild(eye); }
         syncEye();
@@ -751,11 +971,27 @@
         setEyeShift(Math.round((theirs.top + theirs.height / 2) - (mine.top + mine.height / 2)));
     }
 
-    // Written as a rule in our own sheet rather than onto the element: a page whose CSP forbids
-    // inline styles blocks a style attribute but not a stylesheet we own.
-    let alignRule = null;
+    // An inline style is the cheap way to move one element; writing into a live stylesheet
+    // invalidates style for the whole document, measured at about a hundred times the cost per
+    // write. So use the element when the page allows inline styles at all, and keep the sheet for
+    // the CSP case where a style attribute is refused.
+    const INLINE_STYLES_OK = (() => {
+        try {
+            const t = document.createElement('span');
+            t.style.letterSpacing = '3px';
+            (document.body || document.documentElement).appendChild(t);
+            const ok = getComputedStyle(t).letterSpacing === '3px';
+            t.remove();
+            return ok;
+        } catch (e) { return false; }
+    })();
+
+    let alignRule = null, lastShift = null;
     function setEyeShift(px) {
+        if (px === lastShift) return;                        // the common case: nothing moved
+        lastShift = px;
         const value = px ? `translateY(${px}px)` : '';
+        if (INLINE_STYLES_OK && eye) { eye.style.transform = value; return; }
         if (SHEET) {
             try {
                 if (!alignRule) {
@@ -774,12 +1010,32 @@
     // so re-centre once the page has settled, and again whenever the layout changes. At
     // document-idle on a cached page `load` has often already fired, so check before waiting.
     if (document.readyState === 'complete') alignEye(); else addEventListener('load', alignEye);
-    addEventListener('resize', alignEye);
+    // Resize fires continuously while a window edge is dragged; one alignment per frame is plenty.
+    let alignFrame = 0;
+    const alignSoon = () => {
+        if (alignFrame) return;
+        alignFrame = requestAnimationFrame(() => { alignFrame = 0; alignEye(); });
+    };
+    addEventListener('resize', alignSoon);
     try { document.fonts?.ready.then(alignEye); } catch (e) { /* no FontFaceSet */ }
+    // The header's own items change size after we align — an avatar image arrives, a cart count
+    // appears — and nothing else would tell us. Measured 11px off-centre until the next resize.
+    if (typeof ResizeObserver === 'function') {
+        const ro = new ResizeObserver(alignSoon);
+        const watchHeader = () => { if (eye?.parentElement) { ro.disconnect(); ro.observe(eye.parentElement); } };
+        watchHeader();
+        addEventListener('load', watchHeader);
+    }
 
     /* ---------------- menu ---------------- */
     // Modes live on the eye button; only the cache reset is left with nowhere better to sit.
     if (typeof GM_registerMenuCommand === 'function') {
+        // The eye owns this normally, but it stands down when the page blocks our styles — and a
+        // user left in hide mode with no visible control has no way back.
+        GM_registerMenuCommand(`AI-disclosed games: ${EYE[MODE].label} — cycle`, () => {
+            setMode(nextMode());
+            alert(`AI-disclosed games: ${EYE[MODE].label}.\n(The menu label updates on the next page load.)`);
+        });
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
             if (typeof GM_listValues !== 'function') {        // not every manager has it
                 alert('This userscript manager cannot list stored values, so the cache can only be\ncleared from its own storage editor.');
