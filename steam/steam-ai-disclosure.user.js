@@ -306,20 +306,49 @@
     }
     const isAgeGate = (url, html) => url.includes('/agecheck') || /agegate_birthday|app_agegate|agegate_text_container/.test(html);
 
+    // Every app page Steam serves sets `recentapps`, the {appid: time} list behind the store's
+    // "recently viewed" — and it keeps only ten. A background read is not a visit: measured on a
+    // search page, one load replaced the whole list with search results. So after each read, take
+    // every game we have read back out of the list, unless the user had really viewed it. Anything
+    // else that arrived meanwhile (a game opened in another tab) is left where it is. "Every", not
+    // "this one": three reads overlap, and one finishing sees the others' entries already there.
+    const RECENT_MAX = 10;
+    const readRecent = () => {
+        const m = document.cookie.match(/(?:^|;\s*)recentapps=([^;]*)/);
+        try { const o = m && JSON.parse(decodeURIComponent(m[1])); return o && typeof o === 'object' ? o : {}; }
+        catch (e) { return {}; }
+    };
+    let userRecent = readRecent();
+    const ourReads = new Set();
+    function restoreRecent() {
+        const now = readRecent();
+        if (![...ourReads].some(id => id in now && now[id] !== userRecent[id])) return;   // nothing of ours
+        const merged = { ...userRecent, ...now };                     // pushed-out entries come back
+        for (const id of ourReads) if (id in userRecent) merged[id] = userRecent[id]; else delete merged[id];
+        const keep = Object.entries(merged).filter(([, t]) => Number.isFinite(t))
+            .sort((a, b) => b[1] - a[1]).slice(0, RECENT_MAX);
+        userRecent = Object.fromEntries(keep);
+        document.cookie = 'recentapps=' + encodeURIComponent(JSON.stringify(userRecent)) +
+            (keep.length ? '; max-age=7776000' : '; max-age=0') + '; path=/; Secure; SameSite=None';
+    }
+
     async function fetchAppPage(id) {
         // No ?l= or ?cc=: asking Steam for a language is how you get a Set-Cookie that changes the
         // store language the user actually browses in. The page arrives in their own language
         // instead, which is what the localized TITLES list is for.
         const url = `https://store.steampowered.com/app/${id}/`;
-        let html = await read(url, {});
-        if (BYPASS_AGE_GATE && html.gate) {
-            setAgeCookies();
-            html = await read(url, { cache: 'reload' });
-            // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
-            // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
-            if (html.gate) throw new Error('age gate not cleared');
-        }
-        return html.text;
+        ourReads.add(String(id));
+        try {
+            let html = await read(url, {});
+            if (BYPASS_AGE_GATE && html.gate) {
+                setAgeCookies();
+                html = await read(url, { cache: 'reload' });
+                // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
+                // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
+                if (html.gate) throw new Error('age gate not cleared');
+            }
+            return html.text;
+        } finally { restoreRecent(); }
     }
 
     // One read, with the failure modes that actually happen on Steam handled: a stalled socket
