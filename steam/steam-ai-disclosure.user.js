@@ -31,6 +31,10 @@
     const MAX_CONCURRENT = 3;                                // parallel background fetches
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
     const BYPASS_AGE_GATE = true;                            // set age cookies so mature/adult game pages can be read
+    const FETCH_TIMEOUT = 15000;                             // give up on a stalled app-page read
+    const MAX_BYTES    = 3e6;                                // refuse an app page bigger than this
+    const MAX_TEXT     = 400;                                // cap the disclosure text we keep
+    const SWEEP_EVERY  = 24 * 60 * 60 * 1000;                // prune expired cache rows once a day
 
     // Everything listings do with an AI-disclosed game, cycled by the eye button in Steam's header:
     //   'skip'  — don't check listings at all (no background lookups)
@@ -55,7 +59,8 @@
         GM_setValue('sgai:mode', MODE);
         GM_deleteValue('sgai:scan');          // folded into MODE; a stale value must not win next load
         applyMode();
-        if (MODE !== 'skip') scan();          // leaving skip: this may be the page's first scan
+        if (MODE === 'skip') dropQueued();    // stop a queued backlog draining into Steam
+        else scan();                          // leaving skip: this may be the page's first scan
         heal();                               // re-assert badges and the blur positioning guard
         syncEye();
     }
@@ -85,7 +90,7 @@
     // Swap ACCENT to '#ff5d5d' for a warning-red look.
     const ACCENT = '#ffce5c';
 
-    (GM_addStyle || (css => { const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }))(`
+    const CSS = `
         .sgai_badge{display:inline-block;font:700 11px/1 "Motiva Sans",Arial,sans-serif;
             letter-spacing:.7px;text-transform:uppercase;color:${ACCENT};background:rgba(0,0,0,.85);
             border-radius:2px;padding:4px 5px;vertical-align:middle;white-space:nowrap;}
@@ -96,10 +101,14 @@
         .sgai_desc{position:static;margin-top:8px;}
         .sgai_host{position:relative;}
         .sgai_err{color:#8f98a0;}
-        /* Lookup in flight: Steam's own throbber, so a game that is about to be blurred or hidden
-           doesn't just sit there looking checked-and-cleared. */
-        .sgai_check{width:12px;height:12px;padding:4px;
-            background:rgba(0,0,0,.85) url(https://community.fastly.steamstatic.com/public/images/login/throbber.gif) center/12px no-repeat;}
+        /* Lookup in flight, so a game that is about to be blurred or hidden doesn't just sit
+           there looking checked-and-cleared. Drawn in CSS rather than fetched: an image would be
+           one more thing for a Content-Security-Policy or a blocked CDN to take away. */
+        .sgai_check{width:12px;height:12px;padding:4px;background:rgba(0,0,0,.85);}
+        .sgai_check::before{content:"";display:block;box-sizing:border-box;width:12px;height:12px;
+            border:2px solid rgba(255,255,255,.25);border-top-color:${ACCENT};border-radius:50%;
+            animation:sgai_spin .8s linear infinite;}
+        @keyframes sgai_spin{to{transform:rotate(360deg);}}
         [data-sgai-mode="skip"] .sgai_cap{display:none !important;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
@@ -124,31 +133,112 @@
         /* Pages without the header (a few /sale/ layouts): park it in the corner instead. */
         .sgai_eye_float{position:fixed;top:12px;right:14px;z-index:9999;float:none;margin:0;
             background:rgba(0,0,0,.75);}
-    `);
+    `;
+
+    // A page can ship a Content-Security-Policy that refuses an injected <style> — style-src
+    // without 'unsafe-inline' blocks the tag GM_addStyle appends, and the whole script goes
+    // invisible. A constructed stylesheet is not inline content and applies under that same
+    // policy, so try it first and fall back only if the browser (or the sandbox) won't take one.
+    // Whichever route wins, we keep the sheet: alignEye() writes into it, because an inline
+    // style attribute is blocked by that policy too.
+    // Every route is checked by actually measuring a sentinel, never by assuming.
+    function stylesLive() {
+        const t = document.createElement('span');
+        t.className = 'sgai_badge';
+        document.body.appendChild(t);
+        const ok = getComputedStyle(t).letterSpacing === '0.7px';   // set only by our own rule
+        t.remove();
+        return ok;
+    }
+
+    function installStyles() {
+        try {                                                // 1. constructed sheet: CSP-proof
+            const sheet = new CSSStyleSheet();
+            sheet.replaceSync(CSS);
+            document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+            if (stylesLive()) return sheet;
+            document.adoptedStyleSheets = document.adoptedStyleSheets.filter(x => x !== sheet);
+        } catch (e) { /* no constructable stylesheets, or a sandbox realm that won't adopt */ }
+        try {                                                // 2. our own <style>, so we keep .sheet
+            const el = document.createElement('style');
+            el.textContent = CSS;
+            (document.head || document.documentElement).appendChild(el);
+            if (stylesLive()) return el.sheet;
+            el.remove();
+        } catch (e) { /* head missing or append refused */ }
+        try {                                                // 3. whatever the manager can do
+            if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); if (stylesLive()) return null; }
+        } catch (e) { /* GM_addStyle unavailable */ }
+        return undefined;                                    // null = styled, no sheet handle
+    }
+
+    const SHEET = installStyles();
+    // Distinguishes "styled, but we hold no sheet" (null) from "nothing applied" (undefined).
+    const STYLES_OK = SHEET !== undefined;
+    if (!STYLES_OK) console.warn('[SteamGameAI] page styles blocked — badges and the eye are stood down');
 
     /* ---------------- cache (GM storage) ---------------- */
+    // Rows come back from a store the user (and their manager's backup/sync/editor) can write, so
+    // every one is checked before it is believed. A row this script never wrote must return null,
+    // never throw: cacheGet runs inside the IntersectionObserver callback, where a throw would
+    // strand every other capsule in the same batch.
     const key = id => 'sgai:' + id;
+    const validId = id => /^\d+$/.test(String(id));
     function cacheGet(id) {
+        if (!validId(id)) return null;
         const v = GM_getValue(key(id), null);
-        if (!v) return null;
+        if (!v || typeof v !== 'object') return null;         // a string or number would throw on `in`
         if (!('name' in v)) return null;                      // pre-2.9 entry, no game name: refetch once
-        if (Date.now() - v.ts > (v.ai ? TTL_AI : TTL_NONE)) return null;
+        if (!Number.isFinite(v.ts)) return null;              // no timestamp: would never expire
+        const age = Date.now() - v.ts;
+        if (age < 0 || age > (v.ai ? TTL_AI : TTL_NONE)) return null;   // future ts = a skewed clock
         return v;
     }
-    const cacheSet = (id, d) =>
-        GM_setValue(key(id), { ai: !!d.ai, text: d.text || null, name: d.name || null, ts: Date.now() });
+    const cacheSet = (id, d) => {
+        if (!validId(id)) return;
+        try {
+            GM_setValue(key(id), { ai: !!d.ai, text: (d.text || '').slice(0, MAX_TEXT) || null,
+                                   name: (d.name || '').slice(0, 120) || null, ts: Date.now() });
+        } catch (e) { console.warn('[SteamGameAI] could not cache', id, e); }   // quota, serialization
+    };
+
+    // Expired rows are only ever skipped on read, so without this they accumulate for as long as
+    // the script is installed. Sweep once a day, off the critical path.
+    function sweepCache() {
+        if (typeof GM_listValues !== 'function') return;
+        if (Date.now() - (GM_getValue('sgai:swept', 0) || 0) < SWEEP_EVERY) return;
+        GM_setValue('sgai:swept', Date.now());
+        let gone = 0;
+        for (const k of GM_listValues() || []) {
+            const m = /^sgai:(\d+)$/.exec(k);
+            if (!m) continue;
+            if (!cacheGet(m[1])) { GM_deleteValue(k); gone++; }   // same validity rules as a read
+        }
+        if (gone) console.info(`[SteamGameAI] pruned ${gone} stale cache entries`);
+    }
 
     /* ---------------- parse disclosure out of a document ---------------- */
     function getDisclosure(root) {
-        const h2 = [...root.querySelectorAll('h2')].find(h => TITLE_SET.has(h.textContent.trim()));
+        // Collapse whitespace before matching: a heading Steam's template wrapped across source
+        // lines, or one holding a non-breaking space, is the same heading.
+        const flat = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+        const h2 = [...root.querySelectorAll('h2')].find(h => TITLE_SET.has(flat(h)));
         if (!h2) return { ai: false, text: null };
-        const box = h2.closest('#game_area_content_descriptors') || h2.parentElement;
+        // Steam's own disclosure sits in the content-descriptors block. The same heading outside
+        // it is a developer's [h2] in their store description, where the "box" would be the whole
+        // page — that scored a false positive and swept 45 KB of description into the badge
+        // tooltip and the cache. Outside the block, only a box small enough to BE a disclosure counts.
+        let box = h2.closest('#game_area_content_descriptors');
+        if (!box) {
+            box = h2.parentElement;
+            if (!box || box.textContent.length > 2000) return { ai: false, text: null };
+        }
         let text = '';
         box.childNodes.forEach(n => { if (n !== h2) text += (n.textContent || '') + ' '; });
         text = text.replace(/\s+/g, ' ').trim();
         const ci = text.indexOf(':');                       // drop "The developers describe ... like this:" intro
         if (ci > -1 && ci < 160) text = text.slice(ci + 1).trim();
-        return { ai: true, text: text || null };
+        return { ai: true, text: text.slice(0, MAX_TEXT) || null };
     }
 
     // The game's own name, read off its app page. hideTarget() uses it to recognise where a
@@ -161,34 +251,78 @@
     }
 
     /* ---------------- throttled background lookup ---------------- */
-    let active = 0; const queue = [];
-    const slot = () => new Promise(r => { active < MAX_CONCURRENT ? (active++, r()) : queue.push(r); });
-    const release = () => { active--; const n = queue.shift(); if (n) { active++; n(); } };
+    // Three at a time, the rest queued. `epoch` exists so a queued backlog can be thrown away:
+    // an infinite-scroll page can queue well over a thousand lookups, and switching listings off
+    // must stop them rather than let them drain into Steam for the next two minutes.
+    let active = 0, epoch = 0;
+    const queue = [];
+    const slot = () => new Promise((res, rej) => {
+        const mine = epoch;
+        // The slot is taken when it is actually handed over, never in release(), so a cancelled
+        // waiter cannot leave the count above what is really running.
+        const take = () => (mine === epoch ? (active++, res()) : rej(new Error('lookup cancelled')));
+        if (active < MAX_CONCURRENT) take(); else queue.push(take);
+    });
+    const release = () => {
+        active = Math.max(0, active - 1);                    // never let a stray release go negative
+        const next = queue.shift();
+        if (next) next();
+    };
+    function dropQueued() {                                  // nothing waiting held a slot
+        epoch++;
+        queue.splice(0).forEach(take => take());
+    }
 
     // Mature/adult app pages serve an age-check interstitial that has no disclosure section, so they'd
     // be misread as "no AI". Setting the standard age cookies (lazily, only once we actually hit a gate)
     // lets the retry read the real page. Controlled by BYPASS_AGE_GATE.
+    //
+    // Deliberately narrow: host-only rather than all of .steampowered.com, a day rather than a
+    // year, and never when Steam has already set its own birthtime — two cookies of the same name
+    // would both be sent and which one the server honours is anyone's guess. wants_mature_content
+    // is not an age gate at all, it is a preference for what the store shows, so it is not ours to
+    // set. The write is read back, because a blocked or partitioned cookie jar fails silently.
     let ageCookiesSet = false;
     function setAgeCookies() {
         if (ageCookiesSet) return;
-        ageCookiesSet = true;
-        const opts = '; path=/; domain=.steampowered.com; max-age=31536000; SameSite=Lax';
+        if (/\bbirthtime=/.test(document.cookie)) { ageCookiesSet = true; return; }
+        const opts = '; path=/; max-age=86400; SameSite=Lax; Secure';
         document.cookie = 'birthtime=631152001' + opts;             // 1 Jan 1990
         document.cookie = 'lastagecheckage=1-January-1990' + opts;
-        document.cookie = 'wants_mature_content=1' + opts;
+        ageCookiesSet = /\bbirthtime=631152001\b/.test(document.cookie);
+        if (!ageCookiesSet) console.warn('[SteamGameAI] age cookies blocked; gated games stay unverified');
     }
     const isAgeGate = (url, html) => url.includes('/agecheck') || /agegate_birthday|app_agegate|agegate_text_container/.test(html);
 
     async function fetchAppPage(id) {
-        const url = `https://store.steampowered.com/app/${id}/?l=english&cc=us`;
-        let res = await fetch(url);
-        let html = await res.text();
-        if (BYPASS_AGE_GATE && isAgeGate(res.url, html)) {
+        // No ?l= or ?cc=: asking Steam for a language is how you get a Set-Cookie that changes the
+        // store language the user actually browses in. The page arrives in their own language
+        // instead, which is what the localized TITLES list is for.
+        const url = `https://store.steampowered.com/app/${id}/`;
+        let html = await read(url, {});
+        if (BYPASS_AGE_GATE && html.gate) {
             setAgeCookies();
-            res = await fetch(url, { cache: 'reload' });
-            html = await res.text();
+            html = await read(url, { cache: 'reload' });
+            // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
+            // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
+            if (html.gate) throw new Error('age gate not cleared');
         }
-        return html;
+        return html.text;
+    }
+
+    // One read, with the failure modes that actually happen on Steam handled: a stalled socket
+    // (abort), an error or maintenance page (status), and a response too big to be an app page.
+    async function read(url, opts) {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT);
+        try {
+            const res = await fetch(url, { ...opts, signal: ac.signal });
+            if (!res.ok) throw new Error('HTTP ' + res.status);   // 429/503/404 must not cache as "no AI"
+            const len = +res.headers.get('content-length');
+            if (Number.isFinite(len) && len > MAX_BYTES) throw new Error('body too large: ' + len);
+            const text = await res.text();
+            return { text, gate: isAgeGate(res.url || url, text) };
+        } finally { clearTimeout(timer); }
     }
 
     const inflight = new Map();
@@ -197,13 +331,17 @@
         if (c) return Promise.resolve(c);
         if (inflight.has(id)) return inflight.get(id);
         const p = (async () => {
-            await slot();
+            let held = false;                                 // only release a slot we actually took
             try {
+                await slot();
+                held = true;
                 const html = await fetchAppPage(id);
                 // Most games carry no disclosure, and an app page is megabytes: test the raw text
                 // for any of the localized headings first and skip building a DOM for the misses.
                 // (Idea from seeeeew/aiwarningforsteam, which matches the heading in raw HTML.)
-                if (!TITLES.some(t => html.includes(t))) {
+                // The descriptors block has to be there too — the bare phrase also turns up in
+                // reviews, and each false positive costs a full ~20ms parse on the main thread.
+                if (!html.includes('game_area_content_descriptors') || !TITLES.some(t => html.includes(t))) {
                     const d = { ai: false, text: null, name: null };
                     cacheSet(id, d);
                     return d;
@@ -216,7 +354,7 @@
             } catch (e) {
                 console.warn('[SteamGameAI] lookup failed', id, e);
                 return { ai: false, text: null, name: null, error: true };
-            } finally { release(); inflight.delete(id); }
+            } finally { if (held) release(); inflight.delete(id); }
         })();
         inflight.set(id, p);
         return p;
@@ -280,7 +418,7 @@
     }
 
     function titleBadge(text) {
-        const t = document.querySelector('#appHubAppName');
+        const t = document.querySelector('#appHubAppName, .apphub_AppName');
         if (!t || t.querySelector('.sgai_title')) return;
         const b = makeBadge(text || 'This game discloses AI generated content');
         b.classList.add('sgai_title');
@@ -419,17 +557,23 @@
     }
 
     /* ---------------- listing scanner (lazy, via IntersectionObserver) ---------------- */
+    // Entries are unobserved as they are handled, so anything that throws here is never
+    // redelivered: one capsule's bad cache row would silently strand the rest of its batch.
+    // Mark done first, then guard the work.
     const io = new IntersectionObserver(es => es.forEach(e => {
         if (!e.isIntersecting) return;
         io.unobserve(e.target);
         const el = e.target, id = el.dataset.sgaiId;
-        if (!cacheGet(id)) checkBadge(el, true);               // going to the network: show it
-        lookup(id).then(d => {
-            checkBadge(el, false);
-            if (d && d.ai) capBadge(el, d.text, id, d.name);
-            else if (d && d.error) errBadge(el, id);
-        });
         el.dataset.sgai = 'done';
+        if (!validId(id)) return;                              // not an appid we wrote
+        try {
+            if (!cacheGet(id)) checkBadge(el, true);           // going to the network: show it
+            lookup(id).then(d => {
+                checkBadge(el, false);
+                if (d && d.ai) capBadge(el, d.text, id, d.name);
+                else if (d && d.error) errBadge(el, id);
+            }).catch(err => { checkBadge(el, false); console.warn('[SteamGameAI] lookup rejected', id, err); });
+        } catch (err) { console.warn('[SteamGameAI] scan failed', id, err); }
     }), { rootMargin: ROOT_MARGIN });
 
     // Yields {el: badge target, id: appid} for every un-processed capsule, across layouts:
@@ -514,15 +658,28 @@
             ensureEye();
         });
     };
-    new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
+    if (document.body) new MutationObserver(rescan).observe(document.body, { childList: true, subtree: true });
     if (MODE !== 'skip') scan();
+    // Prune expired rows once a day, when the page has nothing better to do.
+    (window.requestIdleCallback || (fn => setTimeout(fn, 5000)))(() => {
+        try { sweepCache(); } catch (e) { console.warn('[SteamGameAI] cache sweep failed', e); }
+    });
 
     /* ---------------- current app page: badge title + seed cache ---------------- */
+    // Only seed from a page that really is the game's store page. Steam serves its age check and
+    // its region/unavailable notices at the same /app/<id>/ URL, and those parse as "no
+    // disclosure" — seeding from one would overwrite a correct hit with a wrong miss for a week.
     if (APP_PAGE_ID) {
-        const d = getDisclosure(document);
-        d.name = appName(document);
-        cacheSet(APP_PAGE_ID, d);
-        if (d.ai) titleBadge(d.text);
+        try {
+            const gated = document.querySelector('#app_agegate, .agegate_birthday_selector, .agegate_text_container');
+            const real = document.querySelector('#appHubAppName, .apphub_AppName');
+            if (real && !gated) {
+                const d = getDisclosure(document);
+                d.name = appName(document);
+                cacheSet(APP_PAGE_ID, d);
+                if (d.ai) titleBadge(d.text);
+            }
+        } catch (e) { console.warn('[SteamGameAI] could not read this app page', e); }
     }
 
     /* ---------------- eye toggle in Steam's global header ---------------- */
@@ -551,6 +708,10 @@
     // The header is server-rendered, but a React page can re-render around it; rescan() calls this
     // so a dropped button comes back.
     function ensureEye() {
+        // Without our stylesheet this div is a full-width block, and prepending it to the header
+        // pushes the store's own content down the page — measured at ~900px, which drops every
+        // capsule out of the observer's reach. A missing button beats a broken page.
+        if (!STYLES_OK) return;
         if (eye && eye.isConnected) return;
         eye = document.createElement('div');
         eye.className = 'sgai_eye';
@@ -577,28 +738,57 @@
     // layout that was just measured. (Same measure-a-neighbour trick as the VRChat script.)
     function alignEye() {
         if (!eye || !eye.isConnected || eye.classList.contains('sgai_eye_float')) return;
-        eye.style.transform = '';                            // measure untransformed
-        const sib = [...eye.parentElement.children].find(n => n !== eye && n.getBoundingClientRect().height);
+        setEyeShift(0);                                      // measure untransformed
+        const sib = [...eye.parentElement.children].find(n => {
+            if (n === eye) return false;
+            const pos = getComputedStyle(n).position;
+            if (pos === 'absolute' || pos === 'fixed') return false;   // an open dropdown, not a row item
+            return n.getBoundingClientRect().height > 0;
+        });
         if (!sib) return;                                    // nothing to line up with
         const mine = eye.getBoundingClientRect(), theirs = sib.getBoundingClientRect();
         if (!mine.height || !theirs.height) return;          // header not laid out yet
-        const shift = Math.round((theirs.top + theirs.height / 2) - (mine.top + mine.height / 2));
-        if (shift) eye.style.transform = `translateY(${shift}px)`;
+        setEyeShift(Math.round((theirs.top + theirs.height / 2) - (mine.top + mine.height / 2)));
+    }
+
+    // Written as a rule in our own sheet rather than onto the element: a page whose CSP forbids
+    // inline styles blocks a style attribute but not a stylesheet we own.
+    let alignRule = null;
+    function setEyeShift(px) {
+        const value = px ? `translateY(${px}px)` : '';
+        if (SHEET) {
+            try {
+                if (!alignRule) {
+                    const i = SHEET.insertRule('.sgai_eye{}', SHEET.cssRules.length);
+                    alignRule = SHEET.cssRules[i];
+                }
+                alignRule.style.transform = value;
+                return;
+            } catch (e) { alignRule = null; }                // sheet went away; fall through
+        }
+        if (eye) eye.style.transform = value;
     }
 
     ensureEye();
     // The avatar image and Motiva Sans both land after document-idle and move the header's items,
-    // so re-centre once the page has settled, and again whenever the layout changes.
-    addEventListener('load', alignEye);
+    // so re-centre once the page has settled, and again whenever the layout changes. At
+    // document-idle on a cached page `load` has often already fired, so check before waiting.
+    if (document.readyState === 'complete') alignEye(); else addEventListener('load', alignEye);
     addEventListener('resize', alignEye);
-    document.fonts?.ready.then(alignEye);
+    try { document.fonts?.ready.then(alignEye); } catch (e) { /* no FontFaceSet */ }
 
     /* ---------------- menu ---------------- */
     // Modes live on the eye button; only the cache reset is left with nowhere better to sit.
-    if (typeof GM_registerMenuCommand !== 'undefined') {
+    if (typeof GM_registerMenuCommand === 'function') {
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
-            (GM_listValues() || []).forEach(k => { if (/^sgai:\d+$/.test(k)) GM_deleteValue(k); });  // appid caches only
-            alert('Steam AI cache cleared.');
+            if (typeof GM_listValues !== 'function') {        // not every manager has it
+                alert('This userscript manager cannot list stored values, so the cache can only be\ncleared from its own storage editor.');
+                return;
+            }
+            let gone = 0;
+            (GM_listValues() || []).forEach(k => { if (/^sgai:\d+$/.test(k)) { GM_deleteValue(k); gone++; } });  // appid caches only
+            GM_deleteValue('sgai:swept');
+            alert(`Steam AI cache cleared (${gone} entries).`);
         });
     }
 })();
