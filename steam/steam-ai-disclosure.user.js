@@ -820,7 +820,8 @@
         if (MODE !== 'skip') scan();
         heal();
         ensureEye();
-        readAppPage();                                       // still waiting on a pushState arrival
+        onNavigate();        // in case the history hook never fired: some sandboxes patch a copy
+        readAppPage();       // still waiting on a pushState arrival
         fruitless = managed.length === had ? fruitless + 1 : 0;
     }
 
@@ -876,6 +877,7 @@
         readAppPage();
         heal(true);
     }
+    // Best effort, and deliberately not the only signal — see the sweep, which also checks.
     for (const name of ['pushState', 'replaceState']) {
         const real = history[name];
         if (typeof real !== 'function') continue;
