@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.20
+// @version      2.21
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at any capsule and click the crossed-out eye. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -884,7 +884,8 @@
 
     // One button, moved to whichever capsule the pointer is over. Fixed to the viewport, so no
     // capsule has to become a positioning context and nothing is inserted into Steam's markup.
-    let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0;
+    let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0, hoverAnchor = null, hoverBeside = false;
+    const BTN_PX = 22, BTN_GAP = 6;
 
     function hoverButton() {
         if (hoverBtn) return hoverBtn;
@@ -934,14 +935,20 @@
     function syncHoverButton() {
         if (!hoverBtn || !hoverEl || !hoverEl.isConnected) return;
         const on = hoverId in hidden;
-        const r = hoverEl.getBoundingClientRect();
         hoverBtn.classList.toggle('sgai_hide_on', on);
         showHoverBtn(true);
         hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
         hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
+        // Beside the wishlist star on a sale card; in the capsule's own top corner otherwise.
+        const a = (hoverAnchor && hoverAnchor.isConnected ? hoverAnchor : hoverEl).getBoundingClientRect();
         const style = hoverStyle();
-        style.top = Math.round(Math.max(2, r.top + 4)) + 'px';
-        style.left = Math.round(Math.min(innerWidth - 26, r.right - 26)) + 'px';
+        if (hoverBeside && a.height) {
+            style.left = Math.round(Math.max(2, a.left - BTN_PX - BTN_GAP)) + 'px';
+            style.top = Math.round(Math.max(2, a.top + (a.height - BTN_PX) / 2)) + 'px';
+        } else {
+            style.left = Math.round(Math.min(innerWidth - BTN_PX - 4, a.right - BTN_PX - 4)) + 'px';
+            style.top = Math.round(Math.max(2, a.top + 4)) + 'px';
+        }
     }
     // Where to write its position: the element itself, or our sheet when the page refuses inline
     // styles (same split as setEyeShift).
@@ -961,11 +968,25 @@
     // Delegated, so it costs one listener rather than two per capsule, and it works for capsules
     // that arrive later. Resolved from the link itself rather than from the scanner's tag: Steam
     // re-renders a sale card when you point at it, and the fresh node has no tag yet.
+    const onScreen = el => el && el.getBoundingClientRect().height > 6 ? el : null;
     function capsuleUnder(target) {
-        const el = target && target.closest && target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
+        if (!target || !target.closest) return null;
+        // A sale widget is a whole card — image on one side, title, tags and buttons on the other —
+        // and pointing at its text half is still pointing at that game. Its wishlist star is the
+        // one place on it that is always free, so the button goes beside the star.
+        const card = target.closest('.StoreSaleWidgetOuterContainer');
+        if (card) {
+            const link = card.querySelector('a[href*="/app/"]');
+            const id = link && appIdOf(link);
+            if (validId(id)) {
+                const star = onScreen(card.querySelector('.WishlistButton'));
+                return { el: card, id, anchor: star || link || card, beside: !!star };
+            }
+        }
+        const el = target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
         if (!el) return null;
         const id = el.dataset.sgaiId || appIdOf(el);
-        return validId(id) ? { el, id } : null;
+        return validId(id) ? { el, id, anchor: el, beside: false } : null;
     }
     const inBox = (el, x, y) => {
         if (!el || !el.isConnected) return false;
@@ -993,6 +1014,8 @@
         hoverButton();
         hoverEl = c.el;
         hoverId = c.id;
+        hoverAnchor = c.anchor;
+        hoverBeside = c.beside;
         syncHoverButton();
     }
     addEventListener('pointerover', watchHover, { passive: true, capture: true });
