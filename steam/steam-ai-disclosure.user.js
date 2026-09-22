@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.22
+// @version      2.23
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at any capsule and click the crossed-out eye. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -129,7 +129,8 @@
     /* ---------------- style ---------------- */
     // The badge is shaped like Steam's own capsule flags (the discount chip, "Free To Play"):
     // flat, dark, 2px corners, small uppercase Motiva Sans — just amber instead of Steam's green.
-    const ACCENT = '#ffce5c';
+    const ACCENT = '#ffce5c';   // AI disclosure: Steam's own flag shape, amber
+    const RED    = '#ff5d5d';   // games you hid yourself, so the two are never confused
 
     const CSS = `
         .sgai_badge{display:inline-block;font:700 11px/1 "Motiva Sans",Arial,sans-serif;
@@ -177,12 +178,15 @@
             background:rgba(0,0,0,.85);color:#fff;opacity:0;visibility:hidden;transition:opacity .12s;}
         .sgai_hide.sgai_on{opacity:1;visibility:visible;}
         .sgai_hide:hover{background:rgba(0,0,0,.97);}
-        .sgai_hide svg{display:block;width:14px;height:14px;}
-        .sgai_hide_on{color:${ACCENT};}
+        .sgai_hide svg{display:block;width:64%;height:64%;}   /* it takes the wishlist star size beside one */
+        .sgai_hide_on{color:${RED};}
         [data-sgai-own="hide"] .sgai_own{display:none !important;}
         /* The list turned off: the games on it stay, faded, so they can be taken back off it. */
-        [data-sgai-own="show"] .sgai_own{opacity:.4;filter:grayscale(1);}
-        [data-sgai-own="show"] .sgai_own:hover{opacity:.85;filter:none;}
+        [data-sgai-own="show"] .sgai_own{opacity:.5;filter:grayscale(.8);outline:2px solid rgba(255,93,93,.55);
+            outline-offset:-2px;background:rgba(255,93,93,.10);}
+        [data-sgai-own="show"] .sgai_own:hover{opacity:.9;filter:none;}
+        /* The hidden-list eye, red while it is holding games back. */
+        .sgai_own_eye[data-mode="hide"]{color:${RED} !important;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
@@ -960,7 +964,7 @@
 
     // One button, moved to whichever capsule the pointer is over. Fixed to the viewport, so no
     // capsule has to become a positioning context and nothing is inserted into Steam's markup.
-    let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0, hoverAnchor = null, hoverBeside = false;
+    let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0;
     const BTN_PX = 22, BTN_GAP = 6;
 
     function hoverButton() {
@@ -1008,6 +1012,60 @@
         }, ms));
     }
 
+    // The box a piece of text actually occupies, which is not its element's box: a title's element
+    // is often the full width of the card while the name itself ends halfway across.
+    function textRect(node) {
+        try {
+            const r = document.createRange();
+            r.selectNodeContents(node);
+            const b = r.getBoundingClientRect();
+            return b.width ? b : node.getBoundingClientRect();
+        } catch (e) { return node.getBoundingClientRect(); }
+    }
+
+    // Where Steam prints this game's name inside `root`. Found by matching the name rather than by
+    // class, because the hover preview's title is a hashed class that changes with every build.
+    function nameNode(root, want) {
+        if (!want) return null;
+        const target = norm(want);
+        const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+        for (let i = 0, n = walk.nextNode(); n && i < 600; n = walk.nextNode(), i++) {
+            if (n.children.length || hoverBtn === n) continue;            // leaves only
+            const t = norm(n.textContent);
+            if (!t || t.length > target.length + 4 || t !== target) continue;
+            const r = n.getBoundingClientRect();
+            if (r.height > 6 && r.width > 6) return n;
+        }
+        return null;
+    }
+
+    // Beside the game's name wherever Steam shows it — including inside its own hover preview —
+    // else beside the wishlist star, matched to the star's size, else the capsule's own corner.
+    function buttonSpot(el, id) {
+        const name = (cacheGet(id) || {}).name || hidden[id] || titleNear(el) || capsuleAlt(el);
+        const roots = [];
+        for (const p of document.querySelectorAll('[popover]')) {
+            if (p === hoverBtn || !p.matches(':popover-open')) continue;
+            if (p.querySelector(`a[href*="/app/${id}"]`)) roots.push(p);   // Steam's preview for this game
+        }
+        roots.push(el);
+        for (const root of roots) {
+            const node = nameNode(root, name);
+            if (!node) continue;
+            const r = textRect(node);
+            return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
+        }
+        for (const root of roots) {
+            const star = onScreen(root.querySelector('.WishlistButton'));
+            if (!star) continue;
+            const s = star.getBoundingClientRect();
+            const size = Math.round(Math.min(40, Math.max(18, s.height)));   // the star's own size
+            return { left: s.left - size - BTN_GAP, top: s.top + (s.height - size) / 2, size };
+        }
+        const r = el.getBoundingClientRect();
+        return { left: r.right - BTN_PX - 4, top: r.top + 4, size: BTN_PX };
+    }
+
     function syncHoverButton() {
         if (!hoverBtn || !hoverEl || !hoverEl.isConnected) return;
         const on = hoverId in hidden;
@@ -1015,16 +1073,11 @@
         showHoverBtn(true);
         hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
         hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
-        // Beside the wishlist star on a sale card; in the capsule's own top corner otherwise.
-        const a = (hoverAnchor && hoverAnchor.isConnected ? hoverAnchor : hoverEl).getBoundingClientRect();
+        const spot = buttonSpot(hoverEl, hoverId);
         const style = hoverStyle();
-        if (hoverBeside && a.height) {
-            style.left = Math.round(Math.max(2, a.left - BTN_PX - BTN_GAP)) + 'px';
-            style.top = Math.round(Math.max(2, a.top + (a.height - BTN_PX) / 2)) + 'px';
-        } else {
-            style.left = Math.round(Math.min(innerWidth - BTN_PX - 4, a.right - BTN_PX - 4)) + 'px';
-            style.top = Math.round(Math.max(2, a.top + 4)) + 'px';
-        }
+        style.width = style.height = spot.size + 'px';
+        style.left = Math.round(Math.min(innerWidth - spot.size - 2, Math.max(2, spot.left))) + 'px';
+        style.top = Math.round(Math.min(innerHeight - spot.size - 2, Math.max(2, spot.top))) + 'px';
     }
     // Where to write its position: the element itself, or our sheet when the page refuses inline
     // styles (same split as setEyeShift).
@@ -1056,13 +1109,13 @@
             const id = link && appIdOf(link);
             if (validId(id)) {
                 const star = onScreen(card.querySelector('.WishlistButton'));
-                return { el: card, id, anchor: star || link || card, beside: !!star };
+                return { el: card, id };
             }
         }
         const el = target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
         if (el) {
             const id = el.dataset.sgaiId || appIdOf(el);
-            if (validId(id)) return { el, id, anchor: el, beside: false };
+            if (validId(id)) return { el, id };
         }
         // Pointing at a row's padding — a chart row, a table cell — is still pointing at that game.
         // Take the nearest box around the pointer that talks about exactly one game.
@@ -1073,7 +1126,7 @@
             const r = n.getBoundingClientRect();
             if (r.width < 120 || r.height < 30) continue;
             const id = [...ids][0];
-            return { el: n, id, anchor: onScreen(n.querySelector('.WishlistButton')) || n, beside: !!onScreen(n.querySelector('.WishlistButton')) };
+            return { el: n, id };
         }
         return null;
     }
@@ -1103,8 +1156,6 @@
         hoverButton();
         hoverEl = c.el;
         hoverId = c.id;
-        hoverAnchor = c.anchor;
-        hoverBeside = c.beside;
         syncHoverButton();
     }
     addEventListener('pointerover', watchHover, { passive: true, capture: true });
