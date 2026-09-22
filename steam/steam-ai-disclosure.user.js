@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.18
+// @version      2.19
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -158,6 +158,13 @@
         /* Pages without the header (a few /sale/ layouts): park it in the corner instead. */
         .sgai_eye_float{position:fixed;top:12px;right:14px;z-index:9999;float:none;margin:0;
             background:rgba(0,0,0,.75);}
+        /* Scrolled past the header: a second eye pinned to the top of the screen, the same size
+           and the same control. placeFollow() sets where; it fades in once the header's eye has
+           gone and out again when it is back. */
+        .sgai_eye_follow{position:fixed;top:12px;left:0;z-index:9999;float:none;margin:0;
+            background:rgba(0,0,0,.75);box-shadow:0 2px 8px rgba(0,0,0,.5);
+            transition:opacity .15s,visibility .15s;}
+        .sgai_eye_follow:not(.sgai_on){opacity:0 !important;visibility:hidden;pointer-events:none;}
     `;
 
     // A page can ship a Content-Security-Policy that refuses an injected <style> — style-src
@@ -627,8 +634,20 @@
     const APP_CAROUSELS = '#recommended_block, [data-featuretarget="storeitems-carousel"], [data-featuretarget="creatorhome-carousel"]';
 
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Word-boundary, so the game "Control" is not found inside "Controller-friendly picks".
-    const namesGame = (text, want) => new RegExp(`(^|\\W)${escapeRe(want)}(\\W|$)`).test(text);
+    // Punctuation, ™ and emoji read as spaces: the name we stored and the name on the card are
+    // often written differently. A demo's page redirects to its full game, so the demo's card says
+    // "All-Night Ascension Demo" while its lookup stored "All Night Ascension".
+    const loose = s => ' ' + s.replace(/[^\p{L}\p{N}]+/gu, ' ').trim() + ' ';
+    // Whole words only, so the game "Control" is not found inside "Controller-friendly picks".
+    // `wants` holds every name this game goes by: the stored one and the capsule's own alt text.
+    function namesGame(text, wants) {
+        for (const want of wants) {
+            if (new RegExp(`(^|\\W)${escapeRe(want)}(\\W|$)`).test(text)) return true;
+            const w = loose(want);
+            if (w.trim() && loose(text).includes(w)) return true;
+        }
+        return false;
+    }
     // An element's text with a space between its text nodes. textContent runs neighbouring
     // elements together — a React sale widget reads "add to wishlistpotion democasual" — and the
     // word-boundary test above then never finds "potion demo" in its own card.
@@ -655,13 +674,16 @@
         return r.height > innerHeight * 0.8 && r.width > innerWidth * 0.9;
     }
 
+    // Returns { t, sure }: the card, and whether its boundary was actually recognised (the name
+    // was found, or a container named for the app). Not sure means the walk may have run before
+    // React finished drawing the card, so heal() looks again for a while.
     function hideTarget(el, kind, id, name) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
-        const want = norm(name) || norm(capsuleAlt(t));
+        const want = [...new Set([norm(name), norm(capsuleAlt(t))])].filter(Boolean);
         // With no name we cannot tell this game's card from the page around it. Hiding a guess
         // would strand half a card or eat a section, so filter nothing and leave the badge.
-        if (!want) return null;
+        if (!want.length) return null;
         let named = namesGame(norm(spacedText(t)), want) || namesGame(norm(t.textContent), want), scoped = false;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
@@ -675,7 +697,7 @@
             if (namedIn(n, t, want)) { t = n; named = true; continue; }
             break;                                           // somebody else's text: card ended below
         }
-        return t;
+        return { t, sure: named || scoped };
     }
 
     // Is this container named for this app — e.g. the curator page's #app-ctn-<appid>? Such an id
@@ -709,8 +731,9 @@
         // like this", "More from <developer>", mods); badges unaffected. The live page mounts
         // each of those into a data-featuretarget="…-carousel" div; #recommended_block is the
         // older server-rendered "More Like This".
-        if (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) return;
-        const t = hideTarget(m.el, m.kind, m.id, m.name);
+        if (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) { m.sure = true; return; }
+        const found = hideTarget(m.el, m.kind, m.id, m.name), t = found && found.t;
+        m.sure = !found || found.sure;
         // A re-render can move the card boundary — a wrapper we absorbed may since have gained
         // another game. Drop the old tag so the previous target doesn't stay hidden with it.
         if (m.target && m.target !== t) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); }
@@ -760,6 +783,7 @@
     // is still where we put it costs two isConnected checks and nothing else. Re-deriving the
     // hide target walks ancestors and queries their subtrees, which on a long search page is what
     // turned this into half a second of blocked main thread per batch.
+    const RECHECKS = 20;                                     // sweeps an unrecognised card edge is retried
     function heal(force) {
         for (let i = managed.length - 1; i >= 0; i--) {
             const m = managed[i];
@@ -769,6 +793,9 @@
             const moved = !placedOk(m);
             if (force || moved) { markAI(m); placeBadge(m); }
             else if (filtering() && (!m.target || !m.target.isConnected)) { markAI(m); placeBadge(m); }
+            // A card whose edge we couldn't recognise may just not be fully drawn yet — React sale
+            // widgets arrive image first, title later. Look again on the next few sweeps.
+            else if (filtering() && !m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS) { markAI(m); placeBadge(m); }
         }
     }
 
@@ -916,6 +943,7 @@
         if (MODE !== 'skip') scan();
         heal();
         ensureEye();
+        ensureFollow();
         onNavigate();        // in case the history hook never fired: some sandboxes patch a copy
         readAppPage();       // still waiting on a pushState arrival
         fruitless = managed.length === had ? fruitless + 1 : 0;
@@ -999,13 +1027,29 @@
         shut: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="currentColor" d="M24 14c5.52 0 10 4.48 10 10 0 1.29-.26 2.52-.71 3.65l5.85 5.85c3.02-2.52 5.4-5.78 6.87-9.5-3.47-8.78-12-15-22.01-15-2.8 0-5.48.5-7.97 1.4l4.32 4.31c1.13-.44 2.36-.71 3.65-.71zM4 8.55l4.56 4.56.91.91C6.17 16.6 3.56 20.03 2 24c3.46 8.78 12 15 22 15 3.1 0 6.06-.6 8.77-1.69l.85.85L39.45 44 42 41.46 6.55 6 4 8.55zM15.06 19.6l3.09 3.09c-.09.43-.15.86-.15 1.31 0 3.31 2.69 6 6 6 .45 0 .88-.06 1.3-.15l3.09 3.09C27.06 33.6 25.58 34 24 34c-5.52 0-10-4.48-10-10 0-1.58.4-3.06 1.06-4.4zm8.61-1.57 6.3 6.3L30 24c0-3.31-2.69-6-6-6l-.33.03z"/></svg>',
     };
     const nextMode = () => MODES[(MODES.indexOf(MODE) + 1) % MODES.length];
-    let eye = null;
+    let eye = null, follow = null;
 
     function syncEye() {
-        if (!eye) return;
-        eye.dataset.mode = MODE;
-        eye.innerHTML = EYE_SVG[EYE[MODE].open ? 'open' : 'shut'];
-        eye.title = `AI disclosure: ${EYE[MODE].label}\nClick to cycle — next: ${EYE[nextMode()].label}\n\n— ${SIGNATURE}`;
+        for (const b of [eye, follow]) {
+            if (!b) continue;
+            b.dataset.mode = MODE;
+            b.innerHTML = EYE_SVG[EYE[MODE].open ? 'open' : 'shut'];
+            b.title = `AI disclosure: ${EYE[MODE].label}\nClick to cycle — next: ${EYE[nextMode()].label}\n\n— ${SIGNATURE}`;
+        }
+    }
+
+    function makeEyeButton(className) {
+        const b = document.createElement('div');
+        b.className = className;
+        b.setAttribute('role', 'button');
+        b.setAttribute('tabindex', '0');
+        b.addEventListener('click', () => setMode(nextMode()));
+        b.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            setMode(nextMode());
+        });
+        return b;
     }
 
     // A selector list returns the first match in DOCUMENT order, and #global_header .content is an
@@ -1031,17 +1075,8 @@
             alignEye();
             return;
         }
-        eye = document.createElement('div');
+        eye = makeEyeButton('sgai_eye');
         lastShift = null;                                    // fresh element, nothing applied yet
-        eye.className = 'sgai_eye';
-        eye.setAttribute('role', 'button');
-        eye.setAttribute('tabindex', '0');
-        eye.addEventListener('click', () => setMode(nextMode()));
-        eye.addEventListener('keydown', e => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
-            e.preventDefault();
-            setMode(nextMode());
-        });
         dockEye();
     }
 
@@ -1144,7 +1179,110 @@
         if (eye) eye.style.transform = value;
     }
 
+    /* ---------------- the eye that follows you down the page ---------------- */
+    // Steam's header scrolls away with the page, and the mode is worth changing from anywhere on a
+    // long list. So once the header's eye is out of sight a second one shows, pinned to the top of
+    // the screen. An IntersectionObserver decides when; nothing runs on scroll while it is hidden.
+    //
+    // Where: Steam's store menu (Browse … search box) sticks to the top once scrolled to. With
+    // room beside it the eye rides level with it in the right margin; without room it rides just
+    // under it. Anything else pinned there — a sale page's own sticky tab bar — goes above us.
+    const EYE_PX = 26, FOLLOW_GAP = 12;
+    let followOn = false, followIO = null, watched = null, navEl = null, followFrame = 0;
+
+    function ensureFollow() {
+        if (!STYLES_OK || typeof IntersectionObserver !== 'function' || !document.body) return;
+        if (!follow) { follow = makeEyeButton('sgai_eye sgai_eye_follow'); syncEye(); }
+        if (!follow.isConnected) document.body.appendChild(follow);    // a body swap drops it
+        if (watched === eye) return;
+        followIO?.disconnect();
+        watched = eye;
+        followOn = null;                                    // unknown until the observer reports
+        followIO = new IntersectionObserver(es => setFollow(!es[es.length - 1].isIntersecting));
+        if (eye) followIO.observe(eye);
+    }
+
+    function setFollow(on) {
+        on = on && !!eye && eye.isConnected && !eye.classList.contains('sgai_eye_float');
+        if (on === followOn) return;
+        followOn = on;
+        follow.classList.toggle('sgai_on', on);
+        if (on) {
+            placeFollow();
+            addEventListener('scroll', followSoon, { passive: true });
+            addEventListener('resize', followSoon);
+        } else {
+            removeEventListener('scroll', followSoon);
+            removeEventListener('resize', followSoon);
+        }
+    }
+    function followSoon() {
+        if (followFrame) return;
+        followFrame = requestAnimationFrame(() => { followFrame = 0; if (followOn) placeFollow(); });
+    }
+
+    // The store menu: the first box around its search field tall enough to be the whole bar.
+    function storeNav() {
+        const s = ['#store_nav_search_term', 'input[name="term"]'].map(q => document.querySelector(q)).find(Boolean);
+        for (let n = s && s.parentElement, i = 0; n && i < 6; n = n.parentElement, i++)
+            if (n.getBoundingClientRect().height >= 40) return n;
+        return null;
+    }
+
+    // The bottom edge of whatever fixed or sticky thing is showing at (x, y), or null. A sticky
+    // wrapper can be zero-height with its bar overflowing it, so the child on the way up counts too.
+    // `own` is the store menu's bar when we are riding beside the menu: its background runs the
+    // full width, so the margin we sit in is still that bar, and it is not something to dodge.
+    function pinnedBottomAt(x, y, own) {
+        for (const hit of document.elementsFromPoint(x, y)) {
+            if (follow.contains(hit)) continue;
+            for (let n = hit, below = null; n && n !== document.body && n !== document.documentElement; below = n, n = n.parentElement) {
+                const pos = getComputedStyle(n).position;
+                if (pos !== 'fixed' && pos !== 'sticky') continue;
+                if (own && n.contains(own)) return null;
+                return Math.max(n.getBoundingClientRect().bottom, below ? below.getBoundingClientRect().bottom : 0);
+            }
+            return null;                                     // the topmost real thing isn't pinned
+        }
+        return null;
+    }
+
+    function placeFollow() {
+        if (!follow) return;
+        const vw = document.documentElement.clientWidth;
+        let left = vw - EYE_PX - FOLLOW_GAP, top = FOLLOW_GAP, beside = false;
+        if (!navEl || !navEl.isConnected) navEl = storeNav();
+        const r = navEl && navEl.getBoundingClientRect();
+        if (r && r.height && r.bottom > 0) {
+            if (vw - r.right >= EYE_PX + 2 * FOLLOW_GAP) {  // room beside it: level with it
+                left = r.right + FOLLOW_GAP;
+                top = Math.max(0, r.top + (r.height - EYE_PX) / 2);
+                beside = true;
+            } else top = Math.max(FOLLOW_GAP, r.bottom + 8); // no room: just under it
+        }
+        const bar = pinnedBottomAt(left + EYE_PX / 2, top + EYE_PX / 2, beside ? navEl : null);
+        if (bar !== null) top = bar + 8;
+        setFollowPos(Math.round(left), Math.round(top));
+    }
+
+    // Same inline-first, sheet-if-CSP split as setEyeShift.
+    let followRule = null, lastPos = '';
+    function setFollowPos(left, top) {
+        const pos = left + ',' + top;
+        if (pos === lastPos) return;
+        lastPos = pos;
+        const target = INLINE_STYLES_OK ? follow.style : (() => {
+            try {
+                if (!followRule && SHEET) followRule = SHEET.cssRules[SHEET.insertRule('.sgai_eye_follow{}', SHEET.cssRules.length)];
+                return followRule ? followRule.style : follow.style;
+            } catch (e) { followRule = null; return follow.style; }
+        })();
+        target.left = left + 'px';
+        target.top = top + 'px';
+    }
+
     ensureEye();
+    ensureFollow();
     // The avatar image and Motiva Sans both land after document-idle and move the header's items,
     // so re-centre once the page has settled, and again whenever the layout changes. At
     // document-idle on a cached page `load` has often already fired, so check before waiting.
