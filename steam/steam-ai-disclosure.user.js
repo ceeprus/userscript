@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.17
+// @version      2.18
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -629,13 +629,25 @@
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Word-boundary, so the game "Control" is not found inside "Controller-friendly picks".
     const namesGame = (text, want) => new RegExp(`(^|\\W)${escapeRe(want)}(\\W|$)`).test(text);
+    // An element's text with a space between its text nodes. textContent runs neighbouring
+    // elements together — a React sale widget reads "add to wishlistpotion democasual" — and the
+    // word-boundary test above then never finds "potion demo" in its own card.
+    function spacedText(el) {
+        let s = '';
+        const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let n = w.nextNode(); n; n = w.nextNode()) s += n.data + ' ';
+        return s;
+    }
     // The text an ancestor adds beyond what we already have; t's text is contiguous inside it.
-    function addedText(n, t) {
-        const full = norm(n.textContent), inner = norm(t.textContent);
+    function addedText(n, t, read = spacedText) {
+        const full = norm(read(n)), inner = norm(read(t));
         if (!inner) return full;
         const i = full.indexOf(inner);
         return (i === -1 ? full : full.slice(0, i) + ' ' + full.slice(i + inner.length)).trim();
     }
+    // Spaced first; the plain read still catches a name split by an inline tag ("Half-<b>Life</b>").
+    const textOnly = el => el.textContent;
+    const namedIn = (n, t, want) => namesGame(addedText(n, t), want) || namesGame(addedText(n, t, textOnly), want);
     const headingOutside = (n, t) => [...n.querySelectorAll('h1,h2,h3,h4,h5,h6')].some(h => !t.contains(h));
     // Last-resort backstop: nothing that fills the screen is one game's card.
     function pageSized(n) {
@@ -650,7 +662,7 @@
         // With no name we cannot tell this game's card from the page around it. Hiding a guess
         // would strand half a card or eat a section, so filter nothing and leave the badge.
         if (!want) return null;
-        let named = namesGame(norm(t.textContent), want), scoped = false;
+        let named = namesGame(norm(spacedText(t)), want) || namesGame(norm(t.textContent), want), scoped = false;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
             if (headingOutside(n, t)) break;
@@ -660,7 +672,7 @@
             const added = addedText(n, t);
             if (!added) { t = n; continue; }                 // adds nothing: a wrapper, absorb it
             if (named) { t = n; continue; }                  // the card's own price / tags / buttons
-            if (namesGame(added, want)) { t = n; named = true; continue; }
+            if (namedIn(n, t, want)) { t = n; named = true; continue; }
             break;                                           // somebody else's text: card ended below
         }
         return t;
@@ -1042,7 +1054,11 @@
         if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return false;
         const r = eye.getBoundingClientRect();
         if (r.width < 8 || r.height < 8) return false;                       // collapsed or clipped
-        if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) return false;
+        // Parked off the page itself is hidden. Merely scrolled out of view is not: Steam's header
+        // scrolls with the page, and a user who scrolls in the first second would otherwise have
+        // the button thrown into the corner. That can't be judged from here, so say so (null).
+        if (r.bottom + scrollY <= 0 || r.right + scrollX <= 0) return false;
+        if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) return null;
         const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
         return !!hit && (hit === eye || eye.contains(hit));                  // or something covers it
     }
@@ -1060,7 +1076,7 @@
             host.prepend(eye);
             syncEye();
             alignEye();
-            if (eyeVisible()) { dockTries = 0; return; }
+            if (eyeVisible() !== false) { dockTries = 0; return; }   // visible, or scrolled away
             if (++dockTries < DOCK_TRIES) {                  // still settling? look again shortly
                 if (!dockTimer) dockTimer = setTimeout(() => { dockTimer = 0; dockEye(); }, DOCK_RETRY_MS);
                 return;
