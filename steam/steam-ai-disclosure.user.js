@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.23
-// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at any capsule and click the crossed-out eye. Both eyes follow you down the page.
+// @version      2.24
+// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='10'%20fill='%23171a21'/%3E%3Ctext%20x='32'%20y='43'%20font-family='Arial,sans-serif'%20font-size='30'%20font-weight='bold'%20fill='%23ffce5c'%20text-anchor='middle'%3EAI%3C/text%3E%3C/svg%3E
@@ -10,6 +10,10 @@
 // @downloadURL  https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js
 // @supportURL   https://github.com/ceeprus/userscript/issues
 // @match        https://store.steampowered.com/*
+// @exclude      https://store.steampowered.com/checkout/*
+// @exclude      https://store.steampowered.com/login/*
+// @exclude      https://store.steampowered.com/join/*
+// @exclude      https://store.steampowered.com/account/*
 // @run-at       document-idle
 // @noframes
 // @grant        GM_setValue
@@ -34,7 +38,7 @@
     const ROOT_MARGIN  = '300px';                            // how early to check capsules before they scroll in
     const BYPASS_AGE_GATE = true;                            // set age cookies so mature/adult game pages can be read
     const FETCH_TIMEOUT = 15000;                             // give up on a stalled app-page read
-    const MAX_BYTES    = 3e6;                                // refuse an app page bigger than this
+    const MAX_BYTES    = 8e6;                                // refuse an app page bigger than this
     const MAX_TEXT     = 400;                                // cap the disclosure text we keep
     const SWEEP_EVERY  = 24 * 60 * 60 * 1000;                // prune expired cache rows once a day
 
@@ -66,7 +70,11 @@
         GM_deleteValue('sgai:scan');          // folded into MODE; a stale value must not win next load
         applyMode();
         if (MODE === 'skip') dropQueued();    // stop a queued backlog draining into Steam
-        else scan();                          // leaving skip: this may be the page's first scan
+        else {
+            // Leaving skip: capsules that went past while it was on were seen but never looked up.
+            for (const el of document.querySelectorAll('[data-sgai="idle"]')) { el.dataset.sgai = 'pending'; io.observe(el); }
+            scan();
+        }
         heal();                               // re-assert badges and the blur positioning guard
         syncEye();
     }
@@ -125,6 +133,10 @@
         "Upplysning om AI-genererat innehåll","Yapay Zekâ İçeriği Açıklaması","Công bố về nội dung tạo bởi AI",
         "Розкриття інформації щодо вмісту, згенерованого ШІ"];
     const TITLE_SET = new Set(TITLES);
+    // The same headings as they can stand in raw page source, where a space may be a line break
+    // or an &nbsp; and an apostrophe may be written as an entity ("dall&#39;IA").
+    const TITLE_RE = new RegExp(TITLES.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/ /g, '(?:\\s|&nbsp;|&#160;)+').replace(/'/g, "(?:'|&#0*39;|&apos;|&#x0*27;)")).join('|'));
 
     /* ---------------- style ---------------- */
     // The badge is shaped like Steam's own capsule flags (the discount chip, "Free To Play"):
@@ -152,6 +164,8 @@
         .sgai_desc{position:static;margin-top:8px;}
         .sgai_host{position:relative;}
         .sgai_err{color:#8f98a0;}
+        /* "Not verified" only means something while a filter is on. */
+        [data-sgai-mode="badge"] .sgai_err{display:none !important;}
         /* Lookup in flight, so a game that is about to be blurred or hidden doesn't just sit
            there looking checked-and-cleared. Drawn in CSS rather than fetched: an image would be
            one more thing for a Content-Security-Policy or a blocked CDN to take away. */
@@ -183,10 +197,10 @@
         [data-sgai-own="hide"] .sgai_own{display:none !important;}
         /* The list turned off: the games on it stay, faded, so they can be taken back off it. */
         [data-sgai-own="show"] .sgai_own{opacity:.5;filter:grayscale(.8);outline:2px solid rgba(255,93,93,.55);
-            outline-offset:-2px;background:rgba(255,93,93,.10);}
+            outline-offset:-2px;background-color:rgba(255,93,93,.10);}
         [data-sgai-own="show"] .sgai_own:hover{opacity:.9;filter:none;}
         /* The hidden-list eye, red while it is holding games back. */
-        .sgai_own_eye[data-mode="hide"]{color:${RED} !important;}
+        .sgai_eye.sgai_own_eye[data-mode="hide"]{color:${RED} !important;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
@@ -225,8 +239,7 @@
     // without 'unsafe-inline' blocks the tag GM_addStyle appends, and the whole script goes
     // invisible. A constructed stylesheet is not inline content and applies under that same
     // policy, so try it first and fall back only if the browser (or the sandbox) won't take one.
-    // Whichever route wins, we keep the sheet: alignEye() writes into it, because an inline
-    // style attribute is blocked by that policy too.
+    // Whichever route wins, we keep the sheet: styleOf() falls back to it for anything we move.
     // Every route is checked by actually measuring a sentinel, never by assuming.
     function stylesLive() {
         const t = document.createElement('span');
@@ -263,6 +276,30 @@
     const STYLES_OK = SHEET !== undefined;
     if (!STYLES_OK) console.warn('[SteamGameAI] page styles blocked — badges and the eye are stood down');
 
+    // Where a position we move is written. The element's own style is the cheap way: writing into
+    // a live stylesheet invalidates style for the whole document, measured at about a hundred
+    // times the cost per write. A CSP's style-src does not cover styles set from script, but that
+    // is checked here rather than assumed, and a rule in our sheet is kept for the browser that
+    // proves otherwise.
+    const INLINE_STYLES_OK = (() => {
+        try {
+            const t = document.createElement('span');
+            t.style.letterSpacing = '3px';
+            (document.body || document.documentElement).appendChild(t);
+            const ok = getComputedStyle(t).letterSpacing === '3px';
+            t.remove();
+            return ok;
+        } catch (e) { return false; }
+    })();
+    const sheetRules = {};
+    function styleOf(el, sel) {
+        if (INLINE_STYLES_OK || !SHEET) return el.style;
+        try {
+            sheetRules[sel] = sheetRules[sel] || SHEET.cssRules[SHEET.insertRule(sel + '{}', SHEET.cssRules.length)];
+            return sheetRules[sel].style;
+        } catch (e) { return el.style; }
+    }
+
     /* ---------------- cache (GM storage) ---------------- */
     // Rows come back from a store the user (and their manager's backup/sync/editor) can write, so
     // every one is checked before it is believed. A row this script never wrote must return null,
@@ -275,6 +312,8 @@
         if (!v || typeof v !== 'object') return null;         // a string or number would throw on `in`
         if (!('name' in v)) return null;                      // pre-2.9 entry, no game name: refetch once
         if (!Number.isFinite(v.ts)) return null;              // no timestamp: would never expire
+        // Read as text everywhere; a number here would throw in every caller.
+        if ((v.name !== null && typeof v.name !== 'string') || (v.text != null && typeof v.text !== 'string')) return null;
         const age = Date.now() - v.ts;
         if (age < 0 || age > (v.ai ? TTL_AI : TTL_NONE)) return null;   // future ts = a skewed clock
         return v;
@@ -291,7 +330,9 @@
     // the script is installed. Sweep once a day, off the critical path.
     function sweepCache() {
         if (typeof GM_listValues !== 'function') return;
-        if (Date.now() - (GM_getValue('sgai:swept', 0) || 0) < SWEEP_EVERY) return;
+        const last = +GM_getValue('sgai:swept', 0);
+        // A garbled or future stamp would sweep on every load, or never again.
+        if (Number.isFinite(last) && last <= Date.now() && Date.now() - last < SWEEP_EVERY) return;
         GM_setValue('sgai:swept', Date.now());
         let gone = 0;
         for (const k of GM_listValues() || []) {
@@ -326,8 +367,15 @@
         const found = findDisclosure(root);
         if (!found) return { ai: false, text: null };
         const { h2, box } = found;
+        // What follows the heading, up to the next one: the descriptors block can hold the
+        // mature-content description as well, and that is not this disclosure's text.
         let text = '';
-        box.childNodes.forEach(n => { if (n !== h2) text += (n.textContent || '') + ' '; });
+        for (let n = h2.nextSibling; n; n = n.nextSibling) {
+            if (n.nodeType === 1 && (n.matches('h2') || n.querySelector('h2'))) break;
+            text += (n.textContent || '') + ' ';
+        }
+        // A heading wrapped on its own inside the box: take the box, less the heading.
+        if (!text.trim()) box.childNodes.forEach(n => { if (n !== h2 && !n.contains?.(h2)) text += (n.textContent || '') + ' '; });
         text = text.replace(/\s+/g, ' ').trim();
         const ci = text.indexOf(':');                       // drop "The developers describe ... like this:" intro
         if (ci > -1 && ci < 160) text = text.slice(ci + 1).trim();
@@ -349,12 +397,12 @@
     // must stop them rather than let them drain into Steam for the next two minutes.
     let active = 0, epoch = 0;
     const queue = [];
+    const cancelled = () => Object.assign(new Error('lookup cancelled'), { cancelled: true });
     const slot = () => new Promise((res, rej) => {
         const mine = epoch;
         // The slot is taken when it is actually handed over, never in release(), so a cancelled
         // waiter cannot leave the count above what is really running.
-        const take = () => (mine === epoch ? (active++, res())
-            : rej(Object.assign(new Error('lookup cancelled'), { cancelled: true })));
+        const take = () => (mine === epoch ? (active++, res()) : rej(cancelled()));
         if (active < MAX_CONCURRENT) take(); else queue.push(take);
     });
     const release = () => {
@@ -369,6 +417,21 @@
         queue.splice(0).forEach(take => take());
     }
 
+    // Steam answers a burst of reads with 429 (or 503). Carrying on at full speed turns the rest of
+    // a long listing into failures within seconds, and keeps the user's own browsing throttled.
+    // So every read waits out the pause Steam asked for — or a doubling one, if it didn't say.
+    let pauseUntil = 0, backoff = 0;
+    const BACKOFF_MIN = 30e3, BACKOFF_MAX = 5 * 60e3;
+    async function waitOut() {
+        while (Date.now() < pauseUntil) await new Promise(r => setTimeout(r, pauseUntil - Date.now()));
+    }
+    function throttled(res) {
+        backoff = Math.min(BACKOFF_MAX, backoff ? backoff * 2 : BACKOFF_MIN);
+        const asked = +res.headers.get('retry-after') * 1000;          // seconds; a date reads NaN
+        pauseUntil = Date.now() + (asked > 0 ? Math.min(asked, BACKOFF_MAX) : backoff);
+        console.warn(`[SteamGameAI] Steam is throttling reads; pausing ${Math.round((pauseUntil - Date.now()) / 1000)}s`);
+    }
+
     // Mature/adult app pages serve an age-check interstitial that has no disclosure section, so they'd
     // be misread as "no AI". Setting the standard age cookies (lazily, only once we actually hit a gate)
     // lets the retry read the real page. Controlled by BYPASS_AGE_GATE.
@@ -378,15 +441,17 @@
     // would both be sent and which one the server honours is anyone's guess. wants_mature_content
     // is not an age gate at all, it is a preference for what the store shows, so it is not ours to
     // set. The write is read back, because a blocked or partitioned cookie jar fails silently.
-    let ageCookiesSet = false;
+    let ageCookiesSet = false, ageCookiesTried = false;
     function setAgeCookies() {
-        if (ageCookiesSet) return;
-        if (/\bbirthtime=/.test(document.cookie)) { ageCookiesSet = true; return; }
+        if (ageCookiesSet || ageCookiesTried) return ageCookiesSet;
+        ageCookiesTried = true;
+        if (/\bbirthtime=/.test(document.cookie)) return (ageCookiesSet = true);
         const opts = '; path=/; max-age=86400; SameSite=Lax; Secure';
         document.cookie = 'birthtime=631152001' + opts;             // 1 Jan 1990
         document.cookie = 'lastagecheckage=1-January-1990' + opts;
         ageCookiesSet = /\bbirthtime=631152001\b/.test(document.cookie);
         if (!ageCookiesSet) console.warn('[SteamGameAI] age cookies blocked; gated games stay unverified');
+        return ageCookiesSet;
     }
     const isAgeGate = (url, html) => url.includes('/agecheck') || /agegate_birthday|app_agegate|agegate_text_container/.test(html);
 
@@ -399,16 +464,22 @@
     const RECENT_MAX = 10;
     const readRecent = () => {
         const m = document.cookie.match(/(?:^|;\s*)recentapps=([^;]*)/);
-        try { const o = m && JSON.parse(decodeURIComponent(m[1])); return o && typeof o === 'object' ? o : {}; }
+        try { const o = m && JSON.parse(decodeURIComponent(m[1])); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; }
         catch (e) { return {}; }
     };
     let userRecent = readRecent();
-    const ourReads = new Set();
+    // Ours: a game with a read in flight, or one still carrying the exact time Steam wrote for our
+    // last read of it. A different time means the user really opened it since — in another tab,
+    // say — and that visit is theirs to keep. Compared as Steam wrote them, so a skewed local
+    // clock can't confuse the two.
+    const reading = new Map(), ourStamps = new Map();
     function restoreRecent() {
         const now = readRecent();
-        if (![...ourReads].some(id => id in now && now[id] !== userRecent[id])) return;   // nothing of ours
+        const strip = Object.keys(now).filter(id => now[id] !== userRecent[id] &&
+            (reading.has(id) || ourStamps.get(id) === now[id]));
+        if (!strip.length) return;                                    // nothing of ours
         const merged = { ...userRecent, ...now };                     // pushed-out entries come back
-        for (const id of ourReads) if (id in userRecent) merged[id] = userRecent[id]; else delete merged[id];
+        for (const id of strip) if (id in userRecent) merged[id] = userRecent[id]; else delete merged[id];
         const keep = Object.entries(merged).filter(([, t]) => Number.isFinite(t))
             .sort((a, b) => b[1] - a[1]).slice(0, RECENT_MAX);
         userRecent = Object.fromEntries(keep);
@@ -424,25 +495,33 @@
         // store language the user actually browses in. The page arrives in their own language
         // instead, which is what the localized TITLES list is for.
         const url = `https://store.steampowered.com/app/${id}/`;
-        ourReads.add(String(id));
         // A demo's page redirects to the full game, and Steam writes THAT game into the recently
         // viewed list — an id we never asked for. So note where the read actually landed.
+        const ids = new Set(), served = new Set();
+        const hold = x => { if (!ids.has(x)) { ids.add(x); reading.set(x, (reading.get(x) || 0) + 1); } };
+        hold(String(id));
         const landed = h => {
             const m = (h.url || '').match(/\/app\/(\d+)/);
-            if (m) ourReads.add(m[1]);
+            if (m) hold(m[1]);
+            served.add(m ? m[1] : String(id));                // a page came back: Steam wrote it down
             return h;
         };
         try {
-            let html = landed(await read(url, {}));
-            if (BYPASS_AGE_GATE && html.gate) {
-                setAgeCookies();
-                html = landed(await read(url, { cache: 'reload' }));
-                // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
-                // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
-                if (html.gate) throw new Error('age gate not cleared');
+            let page = landed(await read(url, {}));
+            if (page.gate && BYPASS_AGE_GATE && setAgeCookies()) page = landed(await read(url, { cache: 'reload' }));
+            // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
+            // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
+            if (page.gate) throw new Error('age gate not cleared');
+            return page;
+        } finally {
+            const now = readRecent();
+            for (const x of ids) {
+                if (served.has(x) && x in now) ourStamps.set(x, now[x]);
+                const n = reading.get(x) - 1;
+                if (n > 0) reading.set(x, n); else reading.delete(x);
             }
-            return html.text;
-        } finally { restoreRecent(); }
+            restoreRecent();
+        }
     }
 
     // One read, with the failure modes that actually happen on Steam handled: a stalled socket
@@ -452,10 +531,13 @@
         const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT);
         try {
             const res = await fetch(url, { ...opts, signal: ac.signal });
+            if (res.status === 429 || res.status === 503) throttled(res);
             if (!res.ok) throw new Error('HTTP ' + res.status);   // 429/503/404 must not cache as "no AI"
-            const len = +res.headers.get('content-length');
+            backoff = 0;
+            const len = +res.headers.get('content-length');     // the compressed size, when sent at all
             if (Number.isFinite(len) && len > MAX_BYTES) throw new Error('body too large: ' + len);
             const text = await res.text();
+            if (text.length > MAX_BYTES) throw new Error('body too large: ' + text.length);
             return { text, url: res.url || url, gate: isAgeGate(res.url || url, text) };
         } finally { clearTimeout(timer); }
     }
@@ -465,7 +547,23 @@
     function rawName(html) {
         const m = html.match(/id="appHubAppName"[^>]*>([^<]{1,200})</)
                || html.match(/<div[^>]+class="[^"]*apphub_AppName[^"]*"[^>]*>([^<]{1,200})</);
-        return m ? m[1].replace(/\s+/g, ' ').trim() || null : null;
+        if (!m) return null;
+        // Still HTML-escaped: "Tom Clancy&#39;s" and "Dungeons &amp; Dragons" as written in the
+        // source. Decoded by the parser, on this one short string; it holds no tags to run.
+        const s = m[1].includes('&') ? new DOMParser().parseFromString(m[1], 'text/html').body.textContent : m[1];
+        return s.replace(/\s+/g, ' ').trim() || null;
+    }
+
+    // Does the raw page carry the disclosure heading? Most games don't, and an app page is
+    // megabytes: test the text and skip building a DOM for the misses. The descriptors block has
+    // to be there too — the bare phrase also turns up in reviews, and each false positive costs a
+    // full ~20ms parse on the main thread. The exact strings first; the looser pattern (entities,
+    // wrapped lines) only over the block itself, where it is cheap.
+    function mayDisclose(html) {
+        if (!html.includes('game_area_content_descriptors')) return false;
+        if (TITLES.some(t => html.includes(t))) return true;
+        const at = html.indexOf('id="game_area_content_descriptors"');
+        return TITLE_RE.test(at > -1 ? html.slice(at, at + 20000) : html);
     }
 
     const inflight = new Map();
@@ -478,13 +576,15 @@
         const p = (async () => {
             let held = false;                                 // only release a slot we actually took
             try {
+                const mine = epoch;
                 if (!urgent) { await slot(); held = true; }
-                const html = await fetchAppPage(id);
-                // Most games carry no disclosure, and an app page is megabytes: test the raw text
-                // for any of the localized headings first and skip building a DOM for the misses.
-                // The descriptors block has to be there too — the bare phrase also turns up in
-                // reviews, and each false positive costs a full ~20ms parse on the main thread.
-                if (!html.includes('game_area_content_descriptors') || !TITLES.some(t => html.includes(t))) {
+                await waitOut();
+                if (!urgent && mine !== epoch) throw cancelled();   // listings turned off meanwhile
+                const { text: html, url } = await fetchAppPage(id);
+                // A login wall, the store front a delisted game redirects to, a region notice: a
+                // page, but not this game's, and caching it would call the game clean for a week.
+                if (!/\/app\/\d+/.test(url) || !/appHubAppName|apphub_AppName/.test(html)) throw new Error('not an app page: ' + url);
+                if (!mayDisclose(html)) {
                     const d = { ai: false, text: null, name: rawName(html) };
                     cacheSet(id, d);
                     return d;
@@ -517,7 +617,7 @@
         return b;
     }
 
-    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     // The name written on a capsule's own artwork. Steam's hover preview drops screenshots into
     // the same card, and their alt text reads "<game>'s screenshot 1", so prefer an image that is
     // actually a capsule (its URL carries the app's asset path) and fall back to the first one.
@@ -542,6 +642,15 @@
         if (/^\d+$/.test(d)) return d;
         const m = (el.getAttribute('href') || '').match(/\/app\/(\d+)/);
         return m ? m[1] : null;
+    }
+    // The game a scanned node shows now. React reuses nodes — a virtualized list, a queue that
+    // advances in place — so this is re-read, the same way the scanner read it the first time.
+    function currentId(el) {
+        const own = appIdOf(el);
+        if (own) return own;
+        const h = /^hover_app_(\d+)$/.exec(el.id || '');
+        if (h) return h[1];
+        return el.matches('.AppVideoCtn, .StoreSaleWidgetShortDesc, .tab_preview') ? widgetAppId(el) : null;
     }
     // Our badge needs a positioned host, but Steam positions its own overlays (the IN LIBRARY
     // ribbon, discount chips) against these same boxes — adding a containing block where one was
@@ -575,8 +684,7 @@
             // A claim whose badge did not survive a re-render is stale; honouring it would
             // suppress this card's badge for the rest of the session.
             if (prior.querySelector('.sgai_cap')) return false;
-            const left = (prior.getAttribute(attr) || '').split(/\s+/).filter(x => x && x !== id);
-            left.length ? prior.setAttribute(attr, left.join(' ')) : prior.removeAttribute(attr);
+            unclaim(prior, attr, id);
         }
         let root = el;
         for (let n = el.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
@@ -586,6 +694,11 @@
         const claimed = (root.getAttribute(attr) || '').split(/\s+/).filter(Boolean);
         if (!claimed.includes(id)) { claimed.push(id); root.setAttribute(attr, claimed.join(' ')); }
         return true;
+    }
+
+    function unclaim(holder, attr, id) {
+        const left = (holder.getAttribute(attr) || '').split(/\s+/).filter(x => x && x !== id);
+        left.length ? holder.setAttribute(attr, left.join(' ')) : holder.removeAttribute(attr);
     }
 
     // Shown while a lookup is actually on the network (a cache hit needs none), so a game that is
@@ -614,6 +727,29 @@
         b.classList.add('sgai_cap', 'sgai_err');
         b.textContent = 'AI?';
         el.appendChild(b);
+    }
+    // A retry got through: the game is verified now, one way or the other.
+    function clearErr(el, id) {
+        const b = el.querySelector(':scope > .sgai_err');
+        if (!b) return;
+        b.remove();
+        releaseHost(el);
+        const holder = el.closest(`[data-sgai-err~="${id}"]`);
+        if (holder) unclaim(holder, 'data-sgai-err', id);
+    }
+    // A failed read is tried again, twice, with room in between: a throttled burst or a dropped
+    // connection is usually over by then. Only while the node still shows that game.
+    const RETRY_MS = [60e3, 300e3];
+    const retries = new WeakMap();
+    function retryLater(el, id) {
+        const n = retries.get(el) || 0;
+        if (n >= RETRY_MS.length) return;
+        retries.set(el, n + 1);
+        setTimeout(() => {
+            if (!el.isConnected || el.dataset.sgaiId !== id) return;
+            el.dataset.sgai = MODE === 'skip' ? 'idle' : 'pending';   // skip: when listings come back on
+            if (MODE !== 'skip') io.observe(el);
+        }, RETRY_MS[n]);
     }
 
     function titleBadge(text) {
@@ -829,23 +965,42 @@
         return false;
     }
 
-    function markAI(m) {
-        if (!filtering()) {                                  // badge-only: nothing to mark
-            if (m.target) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); m.target = null; }
-            return;
-        }
+    // Two entries can land on one card — a capsule and a link inside the same card. Take the tag
+    // off only when no other entry still holds that card, or the game comes back while listed.
+    function untag(m, list, cls) {
+        const t = m.target;
+        if (!t || list.some(x => x !== m && x.target === t)) return;
+        t.classList.remove(cls);
+        if (cls === 'sgai_ai') releaseHost(t);
+    }
+
+    // Where the filter acts for this entry: { t: the card or null, sure }. Reads layout only, so a
+    // batch can measure every card first and then write, instead of forcing a layout per game.
+    function aiTarget(m) {
         // On a game's own app page nearly everything references that app (purchase area, queue
         // widgets, media), so hide targets grow into whole page chunks and strip the page —
         // including its screenshots. Hide only inside the carousels of other games there ("More
         // like this", "More from <developer>", mods); badges unaffected. The live page mounts
         // each of those into a data-featuretarget="…-carousel" div; #recommended_block is the
-        // older server-rendered "More Like This".
-        if (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) { m.sure = true; return; }
-        const found = hideTarget(m.el, m.kind, m.id, m.name), t = found && found.t;
-        m.sure = !found || found.sure;
+        // older server-rendered "More Like This". A title badge has no card either, by design.
+        if (m.kind === 'title' || (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS))) return { t: null, sure: true };
+        // No name yet: React may not have drawn the card. Not sure, so heal() looks again a few times.
+        return hideTarget(m.el, m.kind, m.id, m.name) || { t: null, sure: false };
+    }
+
+    function markAI(m, found) {
+        if (!filtering()) {                                  // badge-only: nothing to mark
+            if (m.target) { untag(m, managed, 'sgai_ai'); m.target = null; }
+            m.settled = false;
+            return;
+        }
+        found = found || aiTarget(m);
+        const t = found.t;
+        m.sure = found.sure;
+        m.settled = true;
         // A re-render can move the card boundary — a wrapper we absorbed may since have gained
         // another game. Drop the old tag so the previous target doesn't stay hidden with it.
-        if (m.target && m.target !== t) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); }
+        if (m.target && m.target !== t) untag(m, managed, 'sgai_ai');
         m.target = t || null;
         if (!t) return;
         // Blur mode draws its label across the card, so the card has to be the positioning
@@ -899,10 +1054,14 @@
     }
 
     function toggleHidden(el, id) {
+        // Another tab may have changed the list since this one read it; saving the stale copy
+        // would put back what it took off and drop what it added.
+        hidden = loadHidden();
         if (id in hidden) {
             delete hidden[id];
-            const i = ownMarks.findIndex(m => m.el === el && m.id === id);
-            if (i > -1) { ownMarks[i].target?.classList.remove('sgai_own'); ownMarks.splice(i, 1); }
+            // Every mark for the game, not just this capsule's: a copy elsewhere on the page would
+            // otherwise stay faded until something else redrew the page.
+            for (let i = ownMarks.length - 1; i >= 0; i--) if (ownMarks[i].id === id) dropOwn(ownMarks[i], i);
         } else {
             hidden[id] = ((cacheGet(id) || {}).name || titleNear(el) || capsuleAlt(el) || '').slice(0, 120);
             // What a listing calls a game is a guess: a chart row carries no name at all, and a
@@ -910,7 +1069,9 @@
             // So show the guess at once and then settle it against the game's own page, which is
             // one request, cached from then on.
             lookup(id, true).then(d => {
-                if (!d || !d.name || !(id in hidden) || hidden[id] === d.name) return;
+                if (!d || !d.name) return;
+                hidden = loadHidden();
+                if (!(id in hidden) || hidden[id] === d.name.slice(0, 120)) return;
                 hidden[id] = d.name.slice(0, 120);
                 saveHidden();
                 healOwn();                                   // a real name can find a better card edge
@@ -928,30 +1089,52 @@
     // it — and with no name to grow by it falls back to shape (see blindTarget), because the user
     // asked for this one by hand and half a card left behind is the worst answer.
     function markOwn(m) {
-        const want = m.id in hidden;
+        // On a game's own page nearly everything links to that game, and a card grown from any of
+        // it takes whole page sections with it — the same reason the AI filter keeps to the
+        // carousels of other games there.
+        const want = m.id in hidden && !(APP_PAGE_ID && !m.el.closest(APP_CAROUSELS));
         const found = want ? hideTarget(m.el, 'corner', m.id, hidden[m.id] || (cacheGet(m.id) || {}).name, true) : null;
         const t = want ? ((found && found.t) || m.el) : null;
         m.sure = !want || !found || found.sure;
-        if (m.target && m.target !== t) m.target.classList.remove('sgai_own');
+        if (m.target && m.target !== t) untag(m, ownMarks, 'sgai_own');
         m.target = t;
         if (t) t.classList.add('sgai_own');
     }
+    function dropOwn(m, i) {
+        untag(m, ownMarks, 'sgai_own');
+        ownMarks.splice(i, 1);
+    }
 
-    function healOwn() {
+    function healOwn(force) {
         for (let i = ownMarks.length - 1; i >= 0; i--) {
             const m = ownMarks[i];
-            const own = appIdOf(m.el);
-            // Gone, recycled for another game, or taken off the list elsewhere (another tab).
-            if (!m.el.isConnected || (own && own !== m.id) || !(m.id in hidden)) {
-                if (m.target) m.target.classList.remove('sgai_own');
-                ownMarks.splice(i, 1);
-                continue;
-            }
-            if (!m.target || !m.target.isConnected || (!m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS)) markOwn(m);
+            const own = currentId(m.el);
+            // Gone, recycled for another game, or taken off the list.
+            if (!m.el.isConnected || (own && own !== m.id) || !(m.id in hidden)) { dropOwn(m, i); continue; }
+            if (force || !m.target || !m.target.isConnected || !m.target.classList.contains('sgai_own')
+                || (!m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS)) markOwn(m);
         }
     }
 
+    // The list as another tab left it, applied here: read when this tab comes back into view.
+    function reloadHidden() {
+        const was = JSON.stringify(hidden);
+        hidden = loadHidden();
+        const own = GM_getValue('sgai:own', 'hide') === 'show' ? 'show' : 'hide';
+        if (own !== OWN) { OWN = own; applyOwn(); }
+        if (JSON.stringify(hidden) !== was) {
+            for (const el of document.querySelectorAll('[data-sgai-id]')) {
+                const id = el.dataset.sgaiId;
+                if (id in hidden) ownEntry(el, id);
+            }
+            healOwn();
+            if (hoverEl) syncHoverButton();
+        }
+        syncOwnButtons();
+    }
+
     function unhideAll() {
+        hidden = loadHidden();                               // the count as it stands, other tabs included
         const n = hiddenCount();
         if (!n) { alert('No games are hidden.'); return; }
         if (!confirm(`Show all ${n} hidden game(s) again?`)) return;
@@ -966,9 +1149,14 @@
     // capsule has to become a positioning context and nothing is inserted into Steam's markup.
     let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0;
     const BTN_PX = 22, BTN_GAP = 6;
+    // Without the popover API, ':popover-open' is a selector syntax error, not a non-match.
+    const POPOVERS = typeof HTMLElement.prototype.showPopover === 'function';
 
     function hoverButton() {
-        if (hoverBtn) return hoverBtn;
+        if (hoverBtn) {
+            if (!hoverBtn.isConnected) document.body.appendChild(hoverBtn);   // a body swap took it
+            return hoverBtn;
+        }
         hoverBtn = document.createElement('div');
         hoverBtn.className = 'sgai_hide';
         hoverBtn.setAttribute('role', 'button');
@@ -985,7 +1173,7 @@
         hoverBtn.addEventListener('pointerleave', () => hideHoverSoon());
         // Steam's hover preview is a popover, and the top layer beats any z-index we could pick.
         // Being a popover ourselves is the only way to sit above it; harmless where unsupported.
-        try { hoverBtn.setAttribute('popover', 'manual'); } catch (e) { /* older browser */ }
+        hoverBtn.setAttribute('popover', 'manual');
         document.body.appendChild(hoverBtn);
         return hoverBtn;
     }
@@ -996,45 +1184,66 @@
     const covered = () => {
         const r = hoverBtn.getBoundingClientRect();
         const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        return !!top && !hoverBtn.contains(top) && top !== hoverBtn;
+        return !!top && !hoverBtn.contains(top);
     };
-    function showHoverBtn(on) {
-        bumpTimers.splice(0).forEach(clearTimeout);
-        hoverBtn.classList.toggle('sgai_on', on);
+    function toTop() {
+        if (!POPOVERS) return;
         try {
-            if (!on) return hoverBtn.hidePopover?.();
             if (!hoverBtn.matches(':popover-open')) hoverBtn.showPopover?.();
             else if (covered()) { hoverBtn.hidePopover(); hoverBtn.showPopover(); }
-        } catch (e) { /* no popover support, or already in that state */ }
-        if (on) bumpTimers = [150, 450].map(ms => setTimeout(() => {
-            try { if (hoverEl && hoverBtn.matches(':popover-open') && covered()) { hoverBtn.hidePopover(); hoverBtn.showPopover(); } }
-            catch (e) { /* closed meanwhile */ }
+        } catch (e) { /* no popover support */ }
+    }
+    function showHoverBtn(on) {
+        hoverBtn.classList.toggle('sgai_on', on);
+        if (on) return toTop();
+        bumpTimers.splice(0).forEach(clearTimeout);
+        try { hoverBtn.hidePopover?.(); } catch (e) { /* no popover support */ }
+    }
+    function bumpSoon() {
+        bumpTimers.splice(0).forEach(clearTimeout);
+        bumpTimers = [150, 450].map(ms => setTimeout(() => {
+            if (hoverEl && hoverBtn.classList.contains('sgai_on')) toTop();
         }, ms));
     }
 
-    // The box a piece of text actually occupies, which is not its element's box: a title's element
-    // is often the full width of the card while the name itself ends halfway across.
-    function textRect(node) {
-        try {
-            const r = document.createRange();
-            r.selectNodeContents(node);
-            const b = r.getBoundingClientRect();
-            return b.width ? b : node.getBoundingClientRect();
-        } catch (e) { return node.getBoundingClientRect(); }
+    // Where the name's last line ends, which is where the button goes. The text's own box, not its
+    // element's: a title element is often the card's full width while the name ends halfway. Kept
+    // inside the element, so a name cut off with an ellipsis doesn't put the button past the cut.
+    function nameEnd(node) {
+        const el = node.nodeType === 3 ? node.parentElement : node;
+        const box = el.getBoundingClientRect();
+        if (box.height <= 6 || box.width <= 6) return null;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const lines = [...range.getClientRects()].filter(r => r.width > 1 && r.height > 1);
+        const last = lines[lines.length - 1] || box;
+        let right = Math.min(last.right, box.right);
+        // Our own AI chip after the name (the app page's title badge): past it, never on top of
+        // it — the chip is a button too.
+        for (const chip of el.querySelectorAll(':scope > .sgai_badge')) {
+            const c = chip.getBoundingClientRect();
+            if (c.width && c.top < last.bottom && c.bottom > last.top) right = Math.max(right, c.right);
+        }
+        return { right, top: last.top, height: last.height };
     }
 
     // Where Steam prints this game's name inside `root`. Found by matching the name rather than by
     // class, because the hover preview's title is a hashed class that changes with every build.
-    function nameNode(root, want) {
-        if (!want) return null;
-        const target = norm(want);
-        const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-        for (let i = 0, n = walk.nextNode(); n && i < 600; n = walk.nextNode(), i++) {
-            if (n.children.length || hoverBtn === n) continue;            // leaves only
-            const t = norm(n.textContent);
-            if (!t || t.length > target.length + 4 || t !== target) continue;
-            const r = n.getBoundingClientRect();
-            if (r.height > 6 && r.width > 6) return n;
+    // Any of the names the game goes by: a demo's card says "… Demo" while its page, which
+    // redirects to the full game, gave the lookup the full game's name.
+    const skipOurs = { acceptNode: n => n.nodeType === 1 && n.matches('.sgai_badge, .sgai_hide')
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT };
+    function nameSpot(root, names) {
+        const wants = new Set(names.map(norm).filter(Boolean));
+        if (!wants.size) return null;
+        const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, skipOurs);
+        for (let i = 0, n = walk.nextNode(); n && i < 1500; n = walk.nextNode(), i++) {
+            // A text node on its own (a title we put our AI chip after has a child now, and is
+            // still the title), or a whole leaf (React splits one name over several text nodes).
+            const text = n.nodeType === 3 ? n.data : (n.children.length ? '' : n.textContent);
+            if (!text || text.length > 300 || !wants.has(norm(text))) continue;
+            const spot = nameEnd(n);
+            if (spot) return spot;
         }
         return null;
     }
@@ -1042,18 +1251,16 @@
     // Beside the game's name wherever Steam shows it — including inside its own hover preview —
     // else beside the wishlist star, matched to the star's size, else the capsule's own corner.
     function buttonSpot(el, id) {
-        const name = (cacheGet(id) || {}).name || hidden[id] || titleNear(el) || capsuleAlt(el);
+        const names = [titleNear(el), (cacheGet(id) || {}).name, hidden[id], capsuleAlt(el)];
         const roots = [];
-        for (const p of document.querySelectorAll('[popover]')) {
+        if (POPOVERS) for (const p of document.querySelectorAll('[popover]')) {
             if (p === hoverBtn || !p.matches(':popover-open')) continue;
-            if (p.querySelector(`a[href*="/app/${id}"]`)) roots.push(p);   // Steam's preview for this game
+            if ([...p.querySelectorAll('a[href*="/app/"]')].some(a => appIdOf(a) === id)) roots.push(p);   // Steam's preview for this game
         }
         roots.push(el);
         for (const root of roots) {
-            const node = nameNode(root, name);
-            if (!node) continue;
-            const r = textRect(node);
-            return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
+            const r = nameSpot(root, names);
+            if (r) return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
         }
         for (const root of roots) {
             const star = onScreen(root.querySelector('.WishlistButton'));
@@ -1068,26 +1275,23 @@
 
     function syncHoverButton() {
         if (!hoverBtn || !hoverEl || !hoverEl.isConnected) return;
+        // The card has just been hidden, or collapsed: nothing is left to sit beside, and the
+        // fallback spot would be the corner of the screen.
+        const box = hoverEl.getBoundingClientRect();
+        if (box.width < 2 || box.height < 2) { showHoverBtn(false); return; }
         const on = hoverId in hidden;
-        hoverBtn.classList.toggle('sgai_hide_on', on);
-        showHoverBtn(true);
-        hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
-        hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
+        if (hoverBtn.dataset.on !== String(on)) {          // redrawn only when it changes
+            hoverBtn.dataset.on = on;
+            hoverBtn.classList.toggle('sgai_hide_on', on);
+            hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
+            hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
+        }
         const spot = buttonSpot(hoverEl, hoverId);
-        const style = hoverStyle();
+        const style = styleOf(hoverBtn, '.sgai_hide');
         style.width = style.height = spot.size + 'px';
         style.left = Math.round(Math.min(innerWidth - spot.size - 2, Math.max(2, spot.left))) + 'px';
         style.top = Math.round(Math.min(innerHeight - spot.size - 2, Math.max(2, spot.top))) + 'px';
-    }
-    // Where to write its position: the element itself, or our sheet when the page refuses inline
-    // styles (same split as setEyeShift).
-    let hoverRule = null;
-    function hoverStyle() {
-        if (INLINE_STYLES_OK) return hoverBtn.style;
-        try {
-            if (!hoverRule && SHEET) hoverRule = SHEET.cssRules[SHEET.insertRule('.sgai_hide{}', SHEET.cssRules.length)];
-        } catch (e) { hoverRule = null; }
-        return hoverRule ? hoverRule.style : hoverBtn.style;
+        showHoverBtn(true);                                  // after the move, so the cover check sees where it is
     }
     const hideHoverSoon = () => {
         clearTimeout(hoverHideTimer);
@@ -1101,16 +1305,11 @@
     function capsuleUnder(target) {
         if (!target || !target.closest) return null;
         // A sale widget is a whole card — image on one side, title, tags and buttons on the other —
-        // and pointing at its text half is still pointing at that game. Its wishlist star is the
-        // one place on it that is always free, so the button goes beside the star.
+        // and pointing at its text half is still pointing at that game.
         const card = target.closest('.StoreSaleWidgetOuterContainer');
         if (card) {
-            const link = card.querySelector('a[href*="/app/"]');
-            const id = link && appIdOf(link);
-            if (validId(id)) {
-                const star = onScreen(card.querySelector('.WishlistButton'));
-                return { el: card, id };
-            }
+            const id = appIdOf(card.querySelector('a[href*="/app/"]'));
+            if (validId(id)) return { el: card, id };
         }
         const el = target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
         if (el) {
@@ -1119,14 +1318,20 @@
         }
         // Pointing at a row's padding — a chart row, a table cell — is still pointing at that game.
         // Take the nearest box around the pointer that talks about exactly one game.
+        // Sized first and stopped at a second game: this runs on every pointer move over the page,
+        // and the gutter of a long list would otherwise read every link in it each time.
         for (let n = target, i = 0; n && i < 4 && n !== document.body; n = n.parentElement, i++) {
-            const links = [...n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')];
-            const ids = new Set(links.map(appIdOf).filter(Boolean));
-            if (ids.size !== 1) continue;
             const r = n.getBoundingClientRect();
+            if (r.height > 600) break;                       // a whole list, not a row
             if (r.width < 120 || r.height < 30) continue;
-            const id = [...ids][0];
-            return { el: n, id };
+            let id = null;
+            for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
+                const x = appIdOf(l);
+                if (!x || x === id) continue;
+                if (id) return null;                         // two games: so is everything above
+                id = x;
+            }
+            if (id) return { el: n, id };
         }
         return null;
     }
@@ -1151,15 +1356,28 @@
             return;
         }
         const r = c.el.getBoundingClientRect();
-        if (r.width < 60 || r.height < 34) return;           // too small to carry a button
+        if (r.width < 60 || r.height < 34) {                 // too small to carry a button
+            // …but the same game's own title link is still that game; another game's is not.
+            if (c.id !== hoverId && !inBox(hoverEl, e.clientX, e.clientY)) hideHoverSoon();
+            return;
+        }
         clearTimeout(hoverHideTimer);
         hoverButton();
+        const moved = c.el !== hoverEl;
         hoverEl = c.el;
         hoverId = c.id;
         syncHoverButton();
+        if (moved) bumpSoon();
     }
     addEventListener('pointerover', watchHover, { passive: true, capture: true });
-    addEventListener('scroll', () => { if (hoverEl) syncHoverButton(); }, { passive: true });
+    // Out of the window altogether: nothing else would say the pointer left the card.
+    document.addEventListener('pointerout', e => { if (!e.relatedTarget && hoverEl) hideHoverSoon(); }, { passive: true });
+    // Once a frame at most; capture, so a list scrolling inside the page moves it as well.
+    let hoverFrame = 0;
+    addEventListener('scroll', () => {
+        if (!hoverEl || hoverFrame) return;
+        hoverFrame = requestAnimationFrame(() => { hoverFrame = 0; syncHoverButton(); });
+    }, { passive: true, capture: true });
 
     // Everything this entry put on the page, taken back off it. The scan marks go too: a card
     // React detaches and re-attaches, or recycles for another game, has to be able to come back
@@ -1167,26 +1385,15 @@
     function detach(m) {
         if (m.node) m.node.remove();
         if (m.host) releaseHost(m.host);
-        if (m.target) { m.target.classList.remove('sgai_ai'); releaseHost(m.target); }
+        if (m.target) untag(m, managed, 'sgai_ai');
         seen.delete(m.el);
         try { delete m.el.dataset.sgai; delete m.el.dataset.sgaiId; } catch (e) { /* not an element any more */ }
         for (const a of ['data-sgai-card', 'data-sgai-desc', 'data-sgai-err']) {
             const holder = m.el.closest?.(`[${a}~="${m.id}"]`);
-            if (!holder) continue;
-            const left = (holder.getAttribute(a) || '').split(/\s+/).filter(x => x && x !== m.id);
-            left.length ? holder.setAttribute(a, left.join(' ')) : holder.removeAttribute(a);
+            if (holder) unclaim(holder, a, m.id);
         }
     }
 
-    // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
-    // popup media slideshow drops our node every time the trailer loops). Prunes dead hosts, and
-    // drops entries whose node has been recycled for a different game — a virtualized list reuses
-    // the same element, and a stale mark would badge an innocent game for good.
-    //
-    // Runs on every mutation batch, so the steady-state path is deliberately cheap: an entry that
-    // is still where we put it costs two isConnected checks and nothing else. Re-deriving the
-    // hide target walks ancestors and queries their subtrees, which on a long search page is what
-    // turned this into half a second of blocked main thread per batch.
     // Both filters are CSS hanging off two attributes on <html>. Some Steam pages — the charts
     // app, which re-renders the whole document — drop them, and then nothing is hidden at all.
     // Cheap to check, so check whenever we touch the page, and watch for it besides.
@@ -1201,21 +1408,37 @@
     }
 
     const RECHECKS = 20;                                     // sweeps an unrecognised card edge is retried
+    // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
+    // popup media slideshow drops our node every time the trailer loops). Prunes dead hosts, and
+    // drops entries whose node has been recycled for a different game — a virtualized list reuses
+    // the same element, and a stale mark would badge an innocent game for good.
+    //
+    // Runs on every mutation batch, so the steady-state path is deliberately cheap: an entry that
+    // is still where we put it costs two isConnected checks and nothing else. Re-deriving the
+    // hide target walks ancestors and queries their subtrees, which on a long search page is what
+    // turned this into half a second of blocked main thread per batch.
     function heal(force) {
         keepFlags();
-        healOwn();
+        healOwn(force);
+        const todo = [];
         for (let i = managed.length - 1; i >= 0; i--) {
             const m = managed[i];
             if (!m.el.isConnected) { detach(m); managed.splice(i, 1); continue; }
-            const own = appIdOf(m.el);
+            const own = currentId(m.el);
             if (own && own !== m.id) { detach(m); managed.splice(i, 1); continue; }
-            const moved = !placedOk(m);
-            if (force || moved) { markAI(m); placeBadge(m); }
-            else if (filtering() && (!m.target || !m.target.isConnected)) { markAI(m); placeBadge(m); }
+            if (force || !placedOk(m)) { todo.push(m); continue; }
+            if (!filtering()) continue;
+            // Never worked out in this mode; or a re-render dropped the card, or rewrote its class
+            // list and took our tag with it.
+            if (!m.settled || (m.target && (!m.target.isConnected || !m.target.classList.contains('sgai_ai')))) todo.push(m);
             // A card whose edge we couldn't recognise may just not be fully drawn yet — React sale
             // widgets arrive image first, title later. Look again on the next few sweeps.
-            else if (filtering() && !m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS) { markAI(m); placeBadge(m); }
+            else if (!m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS) todo.push(m);
         }
+        // Measure every card, then write. Interleaved, each game's class change forced a fresh
+        // layout for the next game's measurement — seconds, on a long list after a mode switch.
+        const found = todo.map(m => (filtering() ? aiTarget(m) : null));
+        todo.forEach((m, i) => { markAI(m, found[i]); placeBadge(m); });
     }
 
     /* ---------------- listing scanner (lazy, via IntersectionObserver) ---------------- */
@@ -1229,16 +1452,38 @@
         el.dataset.sgai = 'done';
         if (!validId(id)) return;                              // not an appid we wrote
         try {
-            ownEntry(el, id);                                  // the hide-this-game button, in every mode
-            if (MODE === 'skip') return;                       // …but no AI lookups in skip
+            ownEntry(el, id);                                  // the hand-hidden list, in every mode
+            // …but no AI lookups in skip. Parked rather than done, so turning listings back on
+            // looks these up too (see setMode).
+            if (MODE === 'skip') { el.dataset.sgai = 'idle'; return; }
             if (!cacheGet(id)) checkBadge(el, true);           // going to the network: show it
             lookup(id).then(d => {
                 checkBadge(el, false);
-                if (d && d.ai) capBadge(el, d.text, id, d.name);
-                else if (d && d.error) errBadge(el, id);
+                // The node went away while we waited: forget it, so it is scanned again if React
+                // puts it back. Or it now shows another game: its own scan handles that one.
+                if (!el.isConnected) { seen.delete(el); delete el.dataset.sgai; delete el.dataset.sgaiId; return; }
+                if (el.dataset.sgaiId !== id) return;
+                if (d && d.cancelled) el.dataset.sgai = 'idle';
+                else if (d && d.error) { errBadge(el, id); retryLater(el, id); }
+                else { clearErr(el, id); if (d && d.ai) capBadge(el, d.text, id, d.name); }
             }).catch(err => { checkBadge(el, false); console.warn('[SteamGameAI] lookup rejected', id, err); });
         } catch (err) { console.warn('[SteamGameAI] scan failed', id, err); }
     }), { rootMargin: ROOT_MARGIN });
+
+    // Which nodes have already been through the scanner. Kept off the DOM on purpose: an
+    // attribute is copied by cloneNode, so a page that clones a card hands us a "already done"
+    // node that never gets a badge. Object identity cannot be cloned. data-sgai is still written
+    // alongside, purely so the state is visible when inspecting the page.
+    const seen = new WeakSet();
+    const fresh = el => !seen.has(el);
+    const skip = el => { seen.add(el); el.dataset.sgai = 'skip'; delete el.dataset.sgaiId; };
+    // Scanned already, but React has since pointed the node at another game: a list that reuses
+    // its rows, a queue that advances in place. Scanned again as that game.
+    const reused = (el, id) => !!el.dataset.sgaiId && el.dataset.sgaiId !== id;
+    const due = (el, id) => fresh(el) || reused(el, id);
+
+    // What a capsule is built from, image or not; a plain text link has none of it.
+    const CAPSULE_PARTS = 'div, picture, video, source, svg, [style*="background"]';
 
     // Yields {el: badge target, id: appid} for every un-processed capsule, across layouts:
     //   • normal store / search capsules carry data-ds-appid
@@ -1247,17 +1492,6 @@
     //     wraps an <img> — so we match that structurally instead of chasing capsule class names
     //     (CapsuleImageCtn, HeroCapsuleImageContainer, ...). Anything already covered by
     //     data-ds-appid is skipped to avoid double-badging.
-    // Which nodes have already been through the scanner. Kept off the DOM on purpose: an
-    // attribute is copied by cloneNode, so a page that clones a card hands us a "already done"
-    // node that never gets a badge. Object identity cannot be cloned. data-sgai is still written
-    // alongside, purely so the state is visible when inspecting the page.
-    const seen = new WeakSet();
-    const fresh = el => !seen.has(el);
-    const skip = el => { seen.add(el); el.dataset.sgai = 'skip'; };
-
-    // What a capsule is built from, image or not; a plain text link has none of it.
-    const CAPSULE_PARTS = 'div, picture, video, source, svg, [style*="background"]';
-
     function* candidates() {
         // Discovery Queue & similar "app video" cards: badge the prominent video/capsule area. It has
         // no /app/ link inside — resolve the appid from its capsule image / trailer URL. Yielded first
@@ -1268,14 +1502,15 @@
             if (id) yield { el: v, id }; else skip(v);
         }
         for (const el of document.querySelectorAll('[data-ds-appid]')) {
-            if (!fresh(el)) continue;
             const id = el.dataset.dsAppid;
+            if (!due(el, id)) continue;
             if (/^\d+$/.test(id || '')) yield { el, id }; else skip(el);
         }
         for (const a of document.querySelectorAll('a[href*="/app/"]')) {
-            if (!fresh(a)) continue;
-            if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { skip(a); continue; }  // data-ds-appid path handles these
+            if (!fresh(a) && !a.dataset.sgaiId) continue;             // written off as a text link
             const m = a.getAttribute('href').match(/\/app\/(\d+)/);
+            if (!due(a, m && m[1])) continue;
+            if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { skip(a); continue; }  // data-ds-appid path handles these
             if (m && a.querySelector('img')) yield { el: a, id: m[1] };                // a capsule, not a text link
             // Review links, breadcrumbs, "more like this" text links: never capsules, and there
             // are thousands of them on a search page. Unmarked, every one was re-tested on every
@@ -1286,8 +1521,8 @@
         }
         // Legacy #global_hover tooltip: no app link or capsule <img>; appid is in the element id.
         for (const h of document.querySelectorAll('[id^="hover_app_"]')) {
-            if (!fresh(h)) continue;
             const m = h.id.match(/^hover_app_(\d+)$/);
+            if (!due(h, m && m[1])) continue;
             if (m) yield { el: h, id: m[1] }; else skip(h);
         }
         // Expanded sale widget: add the marker on its own line under the short description, where
@@ -1326,6 +1561,7 @@
 
     function scan() {
         for (const { el, id } of candidates()) {
+            if (reused(el, id)) el.querySelector(':scope > .sgai_err')?.remove();   // the last game's
             seen.add(el);
             el.dataset.sgaiId = id;
             el.dataset.sgai = 'pending';
@@ -1348,8 +1584,9 @@
     const SETTLE_MS = 250, IDLE_MS = 1000, IDLE_AFTER = 10;
     let timer = 0, lastRun = 0, fruitless = 0;
 
-    const ourNode = n => n.nodeType === 1 &&
-        (n.classList.contains('sgai_badge') || n.classList.contains('sgai_eye') || n.closest('.sgai_eye'));
+    // The hide button redraws its icon as it moves between games; that must not read as the page
+    // changing, or every pointer move over a listing would set off a full sweep.
+    const ourNode = n => n.nodeType === 1 && !!n.closest('.sgai_badge, .sgai_eye, .sgai_hide, .sgai_eye_follow');
     function worthLooking(records) {
         if (!records) return true;
         for (const r of records) {
@@ -1364,12 +1601,17 @@
         timer = 0;
         lastRun = performance.now();
         const had = managed.length;
-        scan();                                          // the hide-this-game buttons exist in every mode
-        heal();
-        ensureEye();
-        ensureFollow();
-        onNavigate();        // in case the history hook never fired: some sandboxes patch a copy
-        readAppPage();       // still waiting on a pushState arrival
+        // Each step on its own: one that throws must not take the rest down with it, for good.
+        for (const step of [
+            heal,            // first, so a node React reused for another game is let go of…
+            scan,            // …and scanned again here as that game. Runs in every mode.
+            ensureEye,
+            ensureFollow,
+            onNavigate,      // in case the history hook never fired: some sandboxes patch a copy
+            readAppPage,     // still waiting on a pushState arrival
+        ]) {
+            try { step(); } catch (e) { console.warn('[SteamGameAI] sweep step failed:', step.name, e); }
+        }
         fruitless = managed.length === had ? fruitless + 1 : 0;
     }
 
@@ -1380,7 +1622,16 @@
                    : (performance.now() - lastRun > SETTLE_MS ? 0 : SETTLE_MS);
         timer = setTimeout(sweep, wait);
     }
-    addEventListener('visibilitychange', () => { if (!document.hidden) rescan(null); });
+    addEventListener('visibilitychange', () => {
+        if (document.hidden) return;
+        // Settings changed in another tab while this one was in the background.
+        try {
+            const mode = loadMode();
+            if (mode !== MODE) setMode(mode);
+            reloadHidden();
+        } catch (e) { console.warn('[SteamGameAI] could not re-read settings', e); }
+        rescan(null);
+    });
     // documentElement, not body: a page that replaces its whole body would otherwise leave the
     // observer bound to a node nothing is attached to any more, and nothing would ever rescan.
     const pageObserver = new MutationObserver(rescan);
@@ -1398,13 +1649,15 @@
     // A pushState arrives before the page it navigates to has rendered, so this cannot be a
     // one-shot: it stays pending until the app page's own markup actually turns up, and the
     // sweep retries it. Gated and unavailable pages never satisfy it, which is the point.
-    let appPageRead = false;
+    // The previous page's name heading, while a pushState arrival hasn't replaced it yet: reading
+    // then would file that game's result under the new game's id.
+    let appPageRead = false, staleName = null;
     function readAppPage() {
         if (!APP_PAGE_ID || appPageRead) return;
         try {
             const gated = document.querySelector('#app_agegate, .agegate_birthday_selector, .agegate_text_container');
             const real = document.querySelector('#appHubAppName, .apphub_AppName');
-            if (!real || gated) return;
+            if (!real || gated || real === staleName) return;
             const d = getDisclosure(document);
             d.name = appName(document);
             cacheSet(APP_PAGE_ID, d);
@@ -1422,6 +1675,7 @@
         if (now === APP_PAGE_ID) return;
         APP_PAGE_ID = now;
         appPageRead = false;
+        staleName = document.querySelector('#appHubAppName, .apphub_AppName');
         readAppPage();
         heal(true);
     }
@@ -1496,26 +1750,29 @@
     const findEyeHost = () => ['#global_action_menu', '#global_actions', '#global_header .content']
         .map(sel => document.querySelector(sel)).find(Boolean);
 
-    // The header is server-rendered, but a React page can re-render around it; rescan() calls this
+    // The header is server-rendered, but a React page can re-render around it; sweep() calls this
     // so a dropped button comes back.
     function ensureEye() {
         // Without our stylesheet this div is a full-width block, and prepending it to the header
         // pushes the store's own content down the page — measured at ~900px, which drops every
         // capsule out of the observer's reach. A missing button beats a broken page.
         if (!STYLES_OK) return;
-        if (eye && eye.isConnected) {
+        if (eye && eye.isConnected && ownEye.isConnected) {
             // A React layout can render its header after we gave up and floated the button in the
             // corner. Take the header now rather than sit on top of it for the rest of the session.
-            if (!eye.classList.contains('sgai_eye_float')) return;
+            if (!eye.classList.contains('sgai_eye_float') || dockFailed) return;   // the header hid it once
             const late = findEyeHost();
             if (!late) return;
             eye.classList.remove('sgai_eye_float');
-            ownEye.classList.remove('sgai_eye_float');
+            ownEye.classList.remove('sgai_eye_float', 'sgai_eye_float2');
             late.prepend(eye);
             eye.after(ownEye);
             alignEye();
+            watchHeader();
             return;
         }
+        eye?.remove();                                       // one of the pair survived: start over
+        ownEye?.remove();
         eye = makeEyeButton('sgai_eye sgai_eye_dock', aiEyeAct);
         ownEye = makeEyeButton('sgai_eye sgai_own_eye sgai_eye_dock', ownEyeAct);
         lastShift = null;                                    // fresh element, nothing applied yet
@@ -1550,12 +1807,13 @@
         const host = dockFailed ? null : findEyeHost();
         if (host) {
             eye.classList.remove('sgai_eye_float');
-            ownEye.classList.remove('sgai_eye_float');
+            ownEye.classList.remove('sgai_eye_float', 'sgai_eye_float2');
             host.prepend(eye);
             eye.after(ownEye);
             syncEye();
             syncOwnButtons();
             alignEye();
+            watchHeader();
             if (eyeVisible() !== false) { dockTries = 0; return; }   // visible, or scrolled away
             if (++dockTries < DOCK_TRIES) {                  // still settling? look again shortly
                 if (!dockTimer) dockTimer = setTimeout(() => { dockTimer = 0; dockEye(); }, DOCK_RETRY_MS);
@@ -1592,40 +1850,23 @@
         if (!mine.height || !theirs.height) return;          // header not laid out yet
         setEyeShift(Math.round((theirs.top + theirs.height / 2) - (mine.top + mine.height / 2)));
     }
+    // The header's own items change size after we align — an avatar image arrives, a cart count
+    // appears — and nothing else would tell us. Measured 11px off-centre until the next resize.
+    // Re-pointed whenever the pair is docked, since that can be a different header than before.
+    let headerRO = null;
+    function watchHeader() {
+        if (typeof ResizeObserver !== 'function' || !eye?.parentElement) return;
+        headerRO = headerRO || new ResizeObserver(() => alignSoon());
+        headerRO.disconnect();
+        headerRO.observe(eye.parentElement);
+    }
 
-    // An inline style is the cheap way to move one element; writing into a live stylesheet
-    // invalidates style for the whole document, measured at about a hundred times the cost per
-    // write. So use the element when the page allows inline styles at all, and keep the sheet for
-    // the CSP case where a style attribute is refused.
-    const INLINE_STYLES_OK = (() => {
-        try {
-            const t = document.createElement('span');
-            t.style.letterSpacing = '3px';
-            (document.body || document.documentElement).appendChild(t);
-            const ok = getComputedStyle(t).letterSpacing === '3px';
-            t.remove();
-            return ok;
-        } catch (e) { return false; }
-    })();
-
-    let alignRule = null, lastShift = null;
+    let lastShift = null;
     function setEyeShift(px) {
         if (px === lastShift) return;                        // the common case: nothing moved
         lastShift = px;
         const value = px ? `translateY(${px}px)` : '';
-        if (INLINE_STYLES_OK && eye) { eye.style.transform = value; if (ownEye) ownEye.style.transform = value; return; }
-        if (SHEET) {
-            try {
-                if (!alignRule) {
-                    const i = SHEET.insertRule('.sgai_eye{}', SHEET.cssRules.length);
-                    alignRule = SHEET.cssRules[i];
-                }
-                alignRule.style.transform = value;
-                return;
-            } catch (e) { alignRule = null; }                // sheet went away; fall through
-        }
-        if (eye) eye.style.transform = value;
-        if (ownEye) ownEye.style.transform = value;
+        for (const b of [eye, ownEye]) if (b) styleOf(b, '.sgai_eye_dock').transform = value;
     }
 
     /* ---------------- the eye that follows you down the page ---------------- */
@@ -1725,20 +1966,14 @@
         setFollowPos(Math.round(left), Math.round(top));
     }
 
-    // Same inline-first, sheet-if-CSP split as setEyeShift.
-    let followRule = null, lastPos = '';
+    let lastPos = '';
     function setFollowPos(left, top) {
         const pos = left + ',' + top;
         if (pos === lastPos) return;
         lastPos = pos;
-        const target = INLINE_STYLES_OK ? follow.style : (() => {
-            try {
-                if (!followRule && SHEET) followRule = SHEET.cssRules[SHEET.insertRule('.sgai_eye_follow{}', SHEET.cssRules.length)];
-                return followRule ? followRule.style : follow.style;
-            } catch (e) { followRule = null; return follow.style; }
-        })();
-        target.left = left + 'px';
-        target.top = top + 'px';
+        const st = styleOf(follow, '.sgai_eye_follow');
+        st.left = left + 'px';
+        st.top = top + 'px';
     }
 
     ensureEye();
@@ -1755,14 +1990,6 @@
     };
     addEventListener('resize', alignSoon);
     try { document.fonts?.ready.then(alignEye); } catch (e) { /* no FontFaceSet */ }
-    // The header's own items change size after we align — an avatar image arrives, a cart count
-    // appears — and nothing else would tell us. Measured 11px off-centre until the next resize.
-    if (typeof ResizeObserver === 'function') {
-        const ro = new ResizeObserver(alignSoon);
-        const watchHeader = () => { if (eye?.parentElement) { ro.disconnect(); ro.observe(eye.parentElement); } };
-        watchHeader();
-        addEventListener('load', watchHeader);
-    }
 
     /* ---------------- menu ---------------- */
     // Modes live on the eye button; only the cache reset is left with nowhere better to sit.
