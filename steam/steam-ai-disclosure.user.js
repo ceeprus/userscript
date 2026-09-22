@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.19
-// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages, an overlay on capsules everywhere (store home, search, recommendations, /sale/ event pages, the personal calendar, hover popups), and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it.
+// @version      2.20
+// @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at any capsule and click the crossed-out eye. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
 // @icon         data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='10'%20fill='%23171a21'/%3E%3Ctext%20x='32'%20y='43'%20font-family='Arial,sans-serif'%20font-size='30'%20font-weight='bold'%20fill='%23ffce5c'%20text-anchor='middle'%3EAI%3C/text%3E%3C/svg%3E
@@ -43,6 +43,10 @@
     //   'badge' — badge the game
     //   'blur'  — badge it, and blur the card until hovered; it keeps its space, so no layout breaks
     //   'hide'  — badge it, and remove the card from the page
+    // Declared up here because the stored lists are read before anything else, and a `const` used
+    // above its own line is a dead script, not a warning.
+    const validId = id => /^\d+$/.test(String(id));
+
     const MODES = ['skip', 'badge', 'blur', 'hide'];
     let MODE = loadMode();
     function loadMode() {
@@ -67,6 +71,35 @@
         syncEye();
     }
     applyMode();
+
+    // Games the user hid by hand, which has nothing to do with AI: a list of appids kept in the
+    // manager's storage, one button per capsule to add to it, and a second eye in the header to
+    // turn the whole list on and off. No reveal on hover here — the list is either applied or not:
+    //   'hide' — a game on the list is taken off the page
+    //   'show' — it stays, dimmed, with its button lit, so the list can be undone
+    const OWN_KEY = 'sgai:hidden';
+    let hidden = loadHidden();
+    function loadHidden() {
+        const v = GM_getValue(OWN_KEY, null);
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return {};   // never trust the store
+        const out = {};
+        for (const [k, name] of Object.entries(v)) if (validId(k)) out[k] = typeof name === 'string' ? name.slice(0, 120) : '';
+        return out;
+    }
+    function saveHidden() {
+        try { GM_setValue(OWN_KEY, hidden); }
+        catch (e) { console.warn('[SteamGameAI] could not save the hidden list', e); }
+    }
+    const hiddenCount = () => Object.keys(hidden).length;
+    let OWN = GM_getValue('sgai:own', 'hide') === 'show' ? 'show' : 'hide';
+    const applyOwn = () => { document.documentElement.dataset.sgaiOwn = OWN; };
+    function setOwn(mode) {
+        OWN = mode;
+        GM_setValue('sgai:own', OWN);
+        applyOwn();
+        syncOwnButtons();
+    }
+    applyOwn();
     // Steam's React pages navigate with pushState, so this is not fixed for the life of the tab.
     // It has to be re-read: on a game's own page hide and blur are restricted to its carousels of
     // other games, and carrying that restriction to the next page left the filter doing nothing.
@@ -135,6 +168,19 @@
         .sgai_flash{animation:sgai_flash .9s ease-in-out .35s 2;}
         @keyframes sgai_flash{50%{background:rgba(255,206,92,.22);box-shadow:0 0 0 3px rgba(255,206,92,.55);}}
         [data-sgai-mode="skip"] .sgai_cap{display:none !important;}
+        /* Hiding a game by hand: one button that follows the pointer to the capsule under it, so
+           no capsule has to become a positioning context. Lit while that game is on the list. */
+        .sgai_hide{position:fixed;z-index:9998;inset:auto;margin:0;border:0;padding:0;overflow:visible;display:flex;align-items:center;justify-content:center;
+            box-sizing:border-box;width:22px;height:22px;border-radius:2px;cursor:pointer;
+            background:rgba(0,0,0,.85);color:#fff;opacity:0;visibility:hidden;transition:opacity .12s;}
+        .sgai_hide.sgai_on{opacity:1;visibility:visible;}
+        .sgai_hide:hover{background:rgba(0,0,0,.97);}
+        .sgai_hide svg{display:block;width:14px;height:14px;}
+        .sgai_hide_on{color:${ACCENT};}
+        [data-sgai-own="hide"] .sgai_own{display:none !important;}
+        /* The list turned off: the games on it stay, faded, so they can be taken back off it. */
+        [data-sgai-own="show"] .sgai_own{opacity:.4;filter:grayscale(1);}
+        [data-sgai-own="show"] .sgai_own:hover{opacity:.85;filter:none;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
@@ -158,12 +204,14 @@
         /* Pages without the header (a few /sale/ layouts): park it in the corner instead. */
         .sgai_eye_float{position:fixed;top:12px;right:14px;z-index:9999;float:none;margin:0;
             background:rgba(0,0,0,.75);}
+        .sgai_eye_float2{top:44px;}                    /* the pair, stacked in the corner */
         /* Scrolled past the header: a second eye pinned to the top of the screen, the same size
            and the same control. placeFollow() sets where; it fades in once the header's eye has
            gone and out again when it is back. */
-        .sgai_eye_follow{position:fixed;top:12px;left:0;z-index:9999;float:none;margin:0;
-            background:rgba(0,0,0,.75);box-shadow:0 2px 8px rgba(0,0,0,.5);
-            transition:opacity .15s,visibility .15s;}
+        .sgai_eye_follow{position:fixed;top:12px;left:0;z-index:9999;display:flex;flex-direction:column;
+            gap:6px;transition:opacity .15s,visibility .15s;}
+        .sgai_eye_follow > .sgai_eye{float:none;margin:0;background:rgba(0,0,0,.75);
+            box-shadow:0 2px 8px rgba(0,0,0,.5);}
         .sgai_eye_follow:not(.sgai_on){opacity:0 !important;visibility:hidden;pointer-events:none;}
     `;
 
@@ -215,7 +263,6 @@
     // never throw: cacheGet runs inside the IntersectionObserver callback, where a throw would
     // strand every other capsule in the same batch.
     const key = id => 'sgai:' + id;
-    const validId = id => /^\d+$/.test(String(id));
     function cacheGet(id) {
         if (!validId(id)) return null;
         const v = GM_getValue(key(id), null);
@@ -757,6 +804,200 @@
         managed.push(m);
     }
 
+    /* ---------------- games you hid yourself ---------------- */
+    // Entries only for the games actually on the list; the button that puts them there is a single
+    // element that follows the pointer (see hoverButton), not one per capsule. A button inside
+    // every capsule would need every capsule to be a positioning context, and adding one moves
+    // Steam's own overlays — its IN LIBRARY ribbon and discount chips — by hundreds of pixels.
+    const ownMarks = [];
+
+    function ownEntry(el, id) {
+        if (!(id in hidden)) return null;
+        let m = ownMarks.find(x => x.el === el && x.id === id);
+        if (!m) { m = { el, id, target: null, sure: true }; ownMarks.push(m); }
+        markOwn(m);
+        return m;
+    }
+
+    // A name for the list when the lookup has none and the capsule's image has no alt text — a
+    // search row, for one. Steam writes the game's name in a title element inside the card.
+    const TITLE_NEAR = '.title, .StoreSaleWidgetTitle, .tab_item_name, .app_name, .hover_title, [class*="Title"]';
+    function titleNear(el) {
+        const card = el.closest('[data-ds-appid], a[href*="/app/"]') || el;
+        const t = card.querySelector(TITLE_NEAR) || card.parentElement?.querySelector(TITLE_NEAR);
+        return ((t && t.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 120);   // as written
+    }
+
+    function toggleHidden(el, id) {
+        if (id in hidden) {
+            delete hidden[id];
+            const i = ownMarks.findIndex(m => m.el === el && m.id === id);
+            if (i > -1) { ownMarks[i].target?.classList.remove('sgai_own'); ownMarks.splice(i, 1); }
+        } else {
+            hidden[id] = ((cacheGet(id) || {}).name || capsuleAlt(el) || titleNear(el) || '').slice(0, 120);
+            ownEntry(el, id);
+            // Every capsule for that game on this page, not just the one under the pointer: a game
+            // can be in a row, a carousel and a sidebar at once, and half-hiding it is worse.
+            for (const other of document.querySelectorAll(`[data-sgai-id="${id}"]`)) ownEntry(other, id);
+        }
+        saveHidden();
+        syncOwnButtons();                                    // the header count changed
+    }
+
+    // Same card-growing as the AI filter, so a hidden game takes its title, price and buttons with
+    // it. With no name to grow by, the capsule itself is hidden: the user asked for this one by
+    // hand, so doing nothing would be the wrong answer.
+    function markOwn(m) {
+        const want = m.id in hidden;
+        const found = want ? hideTarget(m.el, 'corner', m.id, hidden[m.id] || (cacheGet(m.id) || {}).name) : null;
+        const t = want ? ((found && found.t) || m.el) : null;
+        m.sure = !want || !found || found.sure;
+        if (m.target && m.target !== t) m.target.classList.remove('sgai_own');
+        m.target = t;
+        if (t) t.classList.add('sgai_own');
+    }
+
+    function healOwn() {
+        for (let i = ownMarks.length - 1; i >= 0; i--) {
+            const m = ownMarks[i];
+            const own = appIdOf(m.el);
+            // Gone, recycled for another game, or taken off the list elsewhere (another tab).
+            if (!m.el.isConnected || (own && own !== m.id) || !(m.id in hidden)) {
+                if (m.target) m.target.classList.remove('sgai_own');
+                ownMarks.splice(i, 1);
+                continue;
+            }
+            if (!m.target || !m.target.isConnected || (!m.sure && (m.rechecks = (m.rechecks || 0) + 1) <= RECHECKS)) markOwn(m);
+        }
+    }
+
+    function unhideAll() {
+        const n = hiddenCount();
+        if (!n) { alert('No games are hidden.'); return; }
+        if (!confirm(`Show all ${n} hidden game(s) again?`)) return;
+        hidden = {};
+        saveHidden();
+        for (const m of ownMarks.splice(0)) m.target?.classList.remove('sgai_own');
+        syncOwnButtons();
+        syncHoverButton();
+    }
+
+    // One button, moved to whichever capsule the pointer is over. Fixed to the viewport, so no
+    // capsule has to become a positioning context and nothing is inserted into Steam's markup.
+    let hoverBtn = null, hoverEl = null, hoverId = null, hoverHideTimer = 0;
+
+    function hoverButton() {
+        if (hoverBtn) return hoverBtn;
+        hoverBtn = document.createElement('div');
+        hoverBtn.className = 'sgai_hide';
+        hoverBtn.setAttribute('role', 'button');
+        hoverBtn.setAttribute('tabindex', '0');
+        const act = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (hoverEl && hoverId) toggleHidden(hoverEl, hoverId);
+            syncHoverButton();
+        };
+        hoverBtn.addEventListener('click', act);
+        hoverBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') act(e); });
+        hoverBtn.addEventListener('pointerenter', () => clearTimeout(hoverHideTimer));
+        hoverBtn.addEventListener('pointerleave', () => hideHoverSoon());
+        // Steam's hover preview is a popover, and the top layer beats any z-index we could pick.
+        // Being a popover ourselves is the only way to sit above it; harmless where unsupported.
+        try { hoverBtn.setAttribute('popover', 'manual'); } catch (e) { /* older browser */ }
+        document.body.appendChild(hoverBtn);
+        return hoverBtn;
+    }
+    // Steam's hover preview is a popover as well, and the top layer is ordered by who showed last,
+    // so being a popover is not enough: when something is over us we show ours again to put it
+    // back on top. Their preview arrives a moment after the pointer lands, hence the re-checks.
+    let bumpTimers = [];
+    const covered = () => {
+        const r = hoverBtn.getBoundingClientRect();
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!top && !hoverBtn.contains(top) && top !== hoverBtn;
+    };
+    function showHoverBtn(on) {
+        bumpTimers.splice(0).forEach(clearTimeout);
+        hoverBtn.classList.toggle('sgai_on', on);
+        try {
+            if (!on) return hoverBtn.hidePopover?.();
+            if (!hoverBtn.matches(':popover-open')) hoverBtn.showPopover?.();
+            else if (covered()) { hoverBtn.hidePopover(); hoverBtn.showPopover(); }
+        } catch (e) { /* no popover support, or already in that state */ }
+        if (on) bumpTimers = [150, 450].map(ms => setTimeout(() => {
+            try { if (hoverEl && hoverBtn.matches(':popover-open') && covered()) { hoverBtn.hidePopover(); hoverBtn.showPopover(); } }
+            catch (e) { /* closed meanwhile */ }
+        }, ms));
+    }
+
+    function syncHoverButton() {
+        if (!hoverBtn || !hoverEl || !hoverEl.isConnected) return;
+        const on = hoverId in hidden;
+        const r = hoverEl.getBoundingClientRect();
+        hoverBtn.classList.toggle('sgai_hide_on', on);
+        showHoverBtn(true);
+        hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
+        hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
+        const style = hoverStyle();
+        style.top = Math.round(Math.max(2, r.top + 4)) + 'px';
+        style.left = Math.round(Math.min(innerWidth - 26, r.right - 26)) + 'px';
+    }
+    // Where to write its position: the element itself, or our sheet when the page refuses inline
+    // styles (same split as setEyeShift).
+    let hoverRule = null;
+    function hoverStyle() {
+        if (INLINE_STYLES_OK) return hoverBtn.style;
+        try {
+            if (!hoverRule && SHEET) hoverRule = SHEET.cssRules[SHEET.insertRule('.sgai_hide{}', SHEET.cssRules.length)];
+        } catch (e) { hoverRule = null; }
+        return hoverRule ? hoverRule.style : hoverBtn.style;
+    }
+    const hideHoverSoon = () => {
+        clearTimeout(hoverHideTimer);
+        hoverHideTimer = setTimeout(() => { if (hoverBtn) showHoverBtn(false); hoverEl = hoverId = null; }, 120);
+    };
+
+    // Delegated, so it costs one listener rather than two per capsule, and it works for capsules
+    // that arrive later. Resolved from the link itself rather than from the scanner's tag: Steam
+    // re-renders a sale card when you point at it, and the fresh node has no tag yet.
+    function capsuleUnder(target) {
+        const el = target && target.closest && target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
+        if (!el) return null;
+        const id = el.dataset.sgaiId || appIdOf(el);
+        return validId(id) ? { el, id } : null;
+    }
+    const inBox = (el, x, y) => {
+        if (!el || !el.isConnected) return false;
+        const r = el.getBoundingClientRect();
+        return x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2;
+    };
+    function watchHover(e) {
+        if (!STYLES_OK) return;
+        // Pointing at a card makes Steam re-render it, and the events that come out of that name
+        // links elsewhere on the page. Only a capsule the pointer is really inside counts, or the
+        // button jumps to a card on the other side of the screen.
+        let c = capsuleUnder(e.target);
+        if (c && !inBox(c.el, e.clientX, e.clientY)) c = null;
+        if (!c) {
+            // Steam lays its own overlay over a capsule when you point at it, and that overlay is
+            // not inside the game's link — going by the pointer's position keeps the button up.
+            if ((hoverBtn && hoverBtn.contains(e.target)) || inBox(hoverEl, e.clientX, e.clientY) || inBox(hoverBtn, e.clientX, e.clientY))
+                clearTimeout(hoverHideTimer);
+            else hideHoverSoon();
+            return;
+        }
+        const r = c.el.getBoundingClientRect();
+        if (r.width < 60 || r.height < 34) return;           // too small to carry a button
+        clearTimeout(hoverHideTimer);
+        hoverButton();
+        hoverEl = c.el;
+        hoverId = c.id;
+        syncHoverButton();
+    }
+    addEventListener('pointerover', watchHover, { passive: true, capture: true });
+    addEventListener('scroll', () => { if (hoverEl) syncHoverButton(); }, { passive: true });
+
     // Everything this entry put on the page, taken back off it. The scan marks go too: a card
     // React detaches and re-attaches, or recycles for another game, has to be able to come back
     // through scan() — otherwise it stays "already handled" and never gets a badge again.
@@ -785,6 +1026,7 @@
     // turned this into half a second of blocked main thread per batch.
     const RECHECKS = 20;                                     // sweeps an unrecognised card edge is retried
     function heal(force) {
+        healOwn();
         for (let i = managed.length - 1; i >= 0; i--) {
             const m = managed[i];
             if (!m.el.isConnected) { detach(m); managed.splice(i, 1); continue; }
@@ -810,6 +1052,8 @@
         el.dataset.sgai = 'done';
         if (!validId(id)) return;                              // not an appid we wrote
         try {
+            ownEntry(el, id);                                  // the hide-this-game button, in every mode
+            if (MODE === 'skip') return;                       // …but no AI lookups in skip
             if (!cacheGet(id)) checkBadge(el, true);           // going to the network: show it
             lookup(id).then(d => {
                 checkBadge(el, false);
@@ -940,7 +1184,7 @@
         timer = 0;
         lastRun = performance.now();
         const had = managed.length;
-        if (MODE !== 'skip') scan();
+        scan();                                          // the hide-this-game buttons exist in every mode
         heal();
         ensureEye();
         ensureFollow();
@@ -961,7 +1205,7 @@
     // observer bound to a node nothing is attached to any more, and nothing would ever rescan.
     const pageObserver = new MutationObserver(rescan);
     pageObserver.observe(document.documentElement, { childList: true, subtree: true });
-    if (MODE !== 'skip') scan();
+    scan();
     // Prune expired rows once a day, when the page has nothing better to do.
     (window.requestIdleCallback || (fn => setTimeout(fn, 5000)))(() => {
         try { sweepCache(); } catch (e) { console.warn('[SteamGameAI] cache sweep failed', e); }
@@ -1027,10 +1271,12 @@
         shut: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="currentColor" d="M24 14c5.52 0 10 4.48 10 10 0 1.29-.26 2.52-.71 3.65l5.85 5.85c3.02-2.52 5.4-5.78 6.87-9.5-3.47-8.78-12-15-22.01-15-2.8 0-5.48.5-7.97 1.4l4.32 4.31c1.13-.44 2.36-.71 3.65-.71zM4 8.55l4.56 4.56.91.91C6.17 16.6 3.56 20.03 2 24c3.46 8.78 12 15 22 15 3.1 0 6.06-.6 8.77-1.69l.85.85L39.45 44 42 41.46 6.55 6 4 8.55zM15.06 19.6l3.09 3.09c-.09.43-.15.86-.15 1.31 0 3.31 2.69 6 6 6 .45 0 .88-.06 1.3-.15l3.09 3.09C27.06 33.6 25.58 34 24 34c-5.52 0-10-4.48-10-10 0-1.58.4-3.06 1.06-4.4zm8.61-1.57 6.3 6.3L30 24c0-3.31-2.69-6-6-6l-.33.03z"/></svg>',
     };
     const nextMode = () => MODES[(MODES.indexOf(MODE) + 1) % MODES.length];
-    let eye = null, follow = null;
+    // Two controls, side by side: the AI one cycles its four modes, the second turns the user's
+    // own hidden list on and off (alt-click empties it).
+    let eye = null, ownEye = null, follow = null, followAI = null, followOwn = null;
 
     function syncEye() {
-        for (const b of [eye, follow]) {
+        for (const b of [eye, followAI]) {
             if (!b) continue;
             b.dataset.mode = MODE;
             b.innerHTML = EYE_SVG[EYE[MODE].open ? 'open' : 'shut'];
@@ -1038,19 +1284,32 @@
         }
     }
 
-    function makeEyeButton(className) {
+    function syncOwnButtons() {
+        const n = hiddenCount();
+        for (const b of [ownEye, followOwn]) {
+            if (!b) continue;
+            b.dataset.mode = OWN === 'hide' && n ? 'hide' : 'skip';   // lit only when it is doing something
+            b.innerHTML = EYE_SVG[OWN === 'hide' ? 'shut' : 'open'];
+            b.title = `Games you hid yourself: ${n} on the list, ${OWN === 'hide' ? 'hidden' : 'shown (faded)'}\n` +
+                `Click to ${OWN === 'hide' ? 'show them again' : 'hide them'} — alt-click to empty the list\n\n— ${SIGNATURE}`;
+        }
+    }
+
+    function makeEyeButton(className, act) {
         const b = document.createElement('div');
         b.className = className;
         b.setAttribute('role', 'button');
         b.setAttribute('tabindex', '0');
-        b.addEventListener('click', () => setMode(nextMode()));
+        b.addEventListener('click', e => act(e));
         b.addEventListener('keydown', e => {
             if (e.key !== 'Enter' && e.key !== ' ') return;
             e.preventDefault();
-            setMode(nextMode());
+            act(e);
         });
         return b;
     }
+    const aiEyeAct = () => setMode(nextMode());
+    const ownEyeAct = e => (e.altKey ? unhideAll() : setOwn(OWN === 'hide' ? 'show' : 'hide'));
 
     // A selector list returns the first match in DOCUMENT order, and #global_header .content is an
     // ancestor of both other hosts — it would always win, so the candidates are tried in order.
@@ -1071,11 +1330,14 @@
             const late = findEyeHost();
             if (!late) return;
             eye.classList.remove('sgai_eye_float');
+            ownEye.classList.remove('sgai_eye_float');
             late.prepend(eye);
+            eye.after(ownEye);
             alignEye();
             return;
         }
-        eye = makeEyeButton('sgai_eye');
+        eye = makeEyeButton('sgai_eye sgai_eye_dock', aiEyeAct);
+        ownEye = makeEyeButton('sgai_eye sgai_own_eye sgai_eye_dock', ownEyeAct);
         lastShift = null;                                    // fresh element, nothing applied yet
         dockEye();
     }
@@ -1108,8 +1370,11 @@
         const host = dockFailed ? null : findEyeHost();
         if (host) {
             eye.classList.remove('sgai_eye_float');
+            ownEye.classList.remove('sgai_eye_float');
             host.prepend(eye);
+            eye.after(ownEye);
             syncEye();
+            syncOwnButtons();
             alignEye();
             if (eyeVisible() !== false) { dockTries = 0; return; }   // visible, or scrolled away
             if (++dockTries < DOCK_TRIES) {                  // still settling? look again shortly
@@ -1119,10 +1384,13 @@
             dockFailed = true;                               // the header is real, and it hid us
             console.warn('[SteamGameAI] the header will not show the eye button; moving it to the corner');
         }
+        // The corner: stack the pair there, the AI one on top.
         eye.classList.add('sgai_eye_float');
+        ownEye.classList.add('sgai_eye_float', 'sgai_eye_float2');
         setEyeShift(0);
-        document.body.appendChild(eye);
+        document.body.append(eye, ownEye);
         syncEye();
+        syncOwnButtons();
     }
 
     // The header lays its items out with floats, which stack from the top edge — our button is
@@ -1134,7 +1402,7 @@
         if (!eye || !eye.isConnected || eye.classList.contains('sgai_eye_float')) return;
         setEyeShift(0);                                      // measure untransformed
         const sib = [...eye.parentElement.children].find(n => {
-            if (n === eye) return false;
+            if (n === eye || n === ownEye) return false;
             const pos = getComputedStyle(n).position;
             if (pos === 'absolute' || pos === 'fixed') return false;   // an open dropdown, not a row item
             return n.getBoundingClientRect().height > 0;
@@ -1165,7 +1433,7 @@
         if (px === lastShift) return;                        // the common case: nothing moved
         lastShift = px;
         const value = px ? `translateY(${px}px)` : '';
-        if (INLINE_STYLES_OK && eye) { eye.style.transform = value; return; }
+        if (INLINE_STYLES_OK && eye) { eye.style.transform = value; if (ownEye) ownEye.style.transform = value; return; }
         if (SHEET) {
             try {
                 if (!alignRule) {
@@ -1177,6 +1445,7 @@
             } catch (e) { alignRule = null; }                // sheet went away; fall through
         }
         if (eye) eye.style.transform = value;
+        if (ownEye) ownEye.style.transform = value;
     }
 
     /* ---------------- the eye that follows you down the page ---------------- */
@@ -1192,8 +1461,19 @@
 
     function ensureFollow() {
         if (!STYLES_OK || typeof IntersectionObserver !== 'function' || !document.body) return;
-        if (!follow) { follow = makeEyeButton('sgai_eye sgai_eye_follow'); syncEye(); }
+        if (!follow) {
+            follow = document.createElement('div');
+            follow.className = 'sgai_eye_follow';
+            followAI = makeEyeButton('sgai_eye', aiEyeAct);
+            followOwn = makeEyeButton('sgai_eye sgai_own_eye', ownEyeAct);
+            follow.append(followAI, followOwn);
+            syncEye();
+            syncOwnButtons();
+        }
         if (!follow.isConnected) document.body.appendChild(follow);    // a body swap drops it
+        // Steam's store menu is React and can arrive after we first placed the pair, which would
+        // otherwise leave them parked in the fallback corner until the next scroll.
+        if (followOn) placeFollow();
         if (watched === eye) return;
         followIO?.disconnect();
         watched = eye;
@@ -1313,6 +1593,7 @@
             setMode(nextMode());
             alert(`AI-disclosed games: ${EYE[MODE].label}.\n(The menu label updates on the next page load.)`);
         });
+        GM_registerMenuCommand(`Show all games you hid (${hiddenCount()})`, unhideAll);
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
             if (typeof GM_listValues !== 'function') {        // not every manager has it
                 alert('This userscript manager cannot list stored values, so the cache can only be\ncleared from its own storage editor.');
