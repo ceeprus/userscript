@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.21
+// @version      2.22
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at any capsule and click the crossed-out eye. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -38,15 +38,15 @@
     const MAX_TEXT     = 400;                                // cap the disclosure text we keep
     const SWEEP_EVERY  = 24 * 60 * 60 * 1000;                // prune expired cache rows once a day
 
+    // Declared up here because the stored lists are read before anything else, and a `const` used
+    // above its own line is a dead script, not a warning.
+    const validId = id => /^\d+$/.test(String(id));
+
     // Everything listings do with an AI-disclosed game, cycled by the eye button in Steam's header:
     //   'skip'  — don't check listings at all (no background lookups)
     //   'badge' — badge the game
     //   'blur'  — badge it, and blur the card until hovered; it keeps its space, so no layout breaks
     //   'hide'  — badge it, and remove the card from the page
-    // Declared up here because the stored lists are read before anything else, and a `const` used
-    // above its own line is a dead script, not a warning.
-    const validId = id => /^\d+$/.test(String(id));
-
     const MODES = ['skip', 'badge', 'blur', 'hide'];
     let MODE = loadMode();
     function loadMode() {
@@ -73,8 +73,8 @@
     applyMode();
 
     // Games the user hid by hand, which has nothing to do with AI: a list of appids kept in the
-    // manager's storage, one button per capsule to add to it, and a second eye in the header to
-    // turn the whole list on and off. No reveal on hover here — the list is either applied or not:
+    // manager's storage, a button on the capsule under the pointer to add to it, and a second eye
+    // in the header to turn the list on and off. No reveal on hover — it is applied or it is not:
     //   'hide' — a game on the list is taken off the page
     //   'show' — it stays, dimmed, with its button lit, so the list can be undone
     const OWN_KEY = 'sgai:hidden';
@@ -110,7 +110,10 @@
     const INFO = (typeof GM_info !== 'undefined' && GM_info.script) || {};
     const SIGNATURE = `${INFO.name || 'Steam AI Content Disclosure Badge'}${INFO.version ? ' v' + INFO.version : ''}`;
 
-    /* ---------------- localized disclosure titles (data, MIT from seeeeew/aiwarningforsteam) ----- */
+    /* ---------------- the disclosure heading, in every store language ---------------- */
+    // Read off Steam's own app pages, one request per language (?l=…), for a game that carries a
+    // disclosure; they are Steam's strings, not ours. Re-read them the same way if Steam adds a
+    // language. The page arrives in the user's own language, which is why the whole list is here.
     const TITLES = ["AI Generated Content Disclosure","AI 生成内容披露","AI 生成內容聲明","AI生成コンテンツの開示",
         "AI 생성 콘텐츠 사용 공개","การเปิดเผยข้อมูลเกี่ยวกับเนื้อหาที่สร้างด้วย AI","Pernyataan Konten Buatan AI",
         "Pendedahan Kandungan Dihasilkan AI","Оповестяване за съдържание, генерирано от ИИ","Informace o obsahu vytvářeném AI",
@@ -126,7 +129,6 @@
     /* ---------------- style ---------------- */
     // The badge is shaped like Steam's own capsule flags (the discount chip, "Free To Play"):
     // flat, dark, 2px corners, small uppercase Motiva Sans — just amber instead of Steam's green.
-    // Swap ACCENT to '#ff5d5d' for a warning-red look.
     const ACCENT = '#ffce5c';
 
     const CSS = `
@@ -347,12 +349,15 @@
         const mine = epoch;
         // The slot is taken when it is actually handed over, never in release(), so a cancelled
         // waiter cannot leave the count above what is really running.
-        const take = () => (mine === epoch ? (active++, res()) : rej(new Error('lookup cancelled')));
+        const take = () => (mine === epoch ? (active++, res())
+            : rej(Object.assign(new Error('lookup cancelled'), { cancelled: true })));
         if (active < MAX_CONCURRENT) take(); else queue.push(take);
     });
     const release = () => {
         active = Math.max(0, active - 1);                    // never let a stray release go negative
-        const next = queue.shift();
+        // Newest first. An infinite-scroll page can queue a thousand games, and the ones worth
+        // answering are the ones under the reader's eyes now, not row 12 from ten screens ago.
+        const next = queue.pop();
         if (next) next();
     };
     function dropQueued() {                                  // nothing waiting held a slot
@@ -406,6 +411,9 @@
         document.cookie = 'recentapps=' + encodeURIComponent(JSON.stringify(userRecent)) +
             (keep.length ? '; max-age=7776000' : '; max-age=0') + '; path=/; Secure; SameSite=None';
     }
+    // A read still in flight when the tab goes away would leave its game sitting in that list.
+    addEventListener('pagehide', () => restoreRecent());
+    addEventListener('visibilitychange', () => { if (document.hidden) restoreRecent(); });
 
     async function fetchAppPage(id) {
         // No ?l= or ?cc=: asking Steam for a language is how you get a Set-Cookie that changes the
@@ -413,11 +421,18 @@
         // instead, which is what the localized TITLES list is for.
         const url = `https://store.steampowered.com/app/${id}/`;
         ourReads.add(String(id));
+        // A demo's page redirects to the full game, and Steam writes THAT game into the recently
+        // viewed list — an id we never asked for. So note where the read actually landed.
+        const landed = h => {
+            const m = (h.url || '').match(/\/app\/(\d+)/);
+            if (m) ourReads.add(m[1]);
+            return h;
+        };
         try {
-            let html = await read(url, {});
+            let html = landed(await read(url, {}));
             if (BYPASS_AGE_GATE && html.gate) {
                 setAgeCookies();
-                html = await read(url, { cache: 'reload' });
+                html = landed(await read(url, { cache: 'reload' }));
                 // Still gated: adult-only titles need a per-app opt-in we are not going to set, and a
                 // gate page parses as "no disclosure". Fail instead, so it is never cached as clean.
                 if (html.gate) throw new Error('age gate not cleared');
@@ -437,28 +452,36 @@
             const len = +res.headers.get('content-length');
             if (Number.isFinite(len) && len > MAX_BYTES) throw new Error('body too large: ' + len);
             const text = await res.text();
-            return { text, gate: isAgeGate(res.url || url, text) };
+            return { text, url: res.url || url, gate: isAgeGate(res.url || url, text) };
         } finally { clearTimeout(timer); }
     }
 
+    // The game's name out of the raw page, without building a DOM for it. Most games carry no
+    // disclosure and never get parsed, and the hidden list still wants to say what it is holding.
+    function rawName(html) {
+        const m = html.match(/id="appHubAppName"[^>]*>([^<]{1,200})</)
+               || html.match(/<div[^>]+class="[^"]*apphub_AppName[^"]*"[^>]*>([^<]{1,200})</);
+        return m ? m[1].replace(/\s+/g, ' ').trim() || null : null;
+    }
+
     const inflight = new Map();
-    function lookup(id) {
+    // `urgent` is for a game the user just acted on: it jumps the three-at-a-time queue, which on
+    // a long listing can be hundreds of games deep, and doesn't join an already queued read.
+    function lookup(id, urgent) {
         const c = cacheGet(id);
         if (c) return Promise.resolve(c);
-        if (inflight.has(id)) return inflight.get(id);
+        if (!urgent && inflight.has(id)) return inflight.get(id);
         const p = (async () => {
             let held = false;                                 // only release a slot we actually took
             try {
-                await slot();
-                held = true;
+                if (!urgent) { await slot(); held = true; }
                 const html = await fetchAppPage(id);
                 // Most games carry no disclosure, and an app page is megabytes: test the raw text
                 // for any of the localized headings first and skip building a DOM for the misses.
-                // (Idea from seeeeew/aiwarningforsteam, which matches the heading in raw HTML.)
                 // The descriptors block has to be there too — the bare phrase also turns up in
                 // reviews, and each false positive costs a full ~20ms parse on the main thread.
                 if (!html.includes('game_area_content_descriptors') || !TITLES.some(t => html.includes(t))) {
-                    const d = { ai: false, text: null, name: null };
+                    const d = { ai: false, text: null, name: rawName(html) };
                     cacheSet(id, d);
                     return d;
                 }
@@ -468,11 +491,14 @@
                 cacheSet(id, d);                            // only cache successful reads
                 return d;
             } catch (e) {
+                // A cancelled lookup is us switching listings off, not a failure: no warning, and
+                // no "not verified" badge either, because nothing was attempted.
+                if (e && e.cancelled) return { ai: false, text: null, name: null, cancelled: true };
                 console.warn('[SteamGameAI] lookup failed', id, e);
                 return { ai: false, text: null, name: null, error: true };
-            } finally { if (held) release(); inflight.delete(id); }
+            } finally { if (held) release(); if (!urgent) inflight.delete(id); }
         })();
-        inflight.set(id, p);
+        if (!urgent) inflight.set(id, p);
         return p;
     }
 
@@ -488,8 +514,19 @@
     }
 
     const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // The name written on a capsule's own artwork. Steam's hover preview drops screenshots into
+    // the same card, and their alt text reads "<game>'s screenshot 1", so prefer an image that is
+    // actually a capsule (its URL carries the app's asset path) and fall back to the first one.
+    const CAPSULE_IMG = 'img[alt]:not([alt=""])';
     const capsuleAlt = el => {
-        const img = el.matches('img') ? el : el.querySelector('img[alt]:not([alt=""])');
+        if (el.matches('img')) return el.getAttribute('alt') || '';
+        const imgs = [...el.querySelectorAll(CAPSULE_IMG)];
+        const src = i => i.getAttribute('src') || '';
+        // Screenshots sit beside the artwork under the same app folder, named ss_…, so pick by the
+        // kind of image rather than by its folder.
+        const img = imgs.find(i => /(header|capsule|hero|library_|logo)/i.test(src(i)))
+                 || imgs.find(i => !/\/ss_|screenshot|movie|\.webm|broadcast/i.test(src(i)))
+                 || imgs[0];
         return (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
     };
 
@@ -550,7 +587,6 @@
     // Shown while a lookup is actually on the network (a cache hit needs none), so a game that is
     // about to be blurred or hidden doesn't read as already checked and cleared. Only with a
     // filter on, where that misreading costs something.
-    // (Idea from seeeeew/aiwarningforsteam, which throbbers its pending search rows.)
     function checkBadge(el, on) {
         const had = el.querySelector(':scope > .sgai_check');
         if (!on) { if (had) { had.remove(); releaseHost(el); } return; }
@@ -565,7 +601,6 @@
 
     // A lookup that failed leaves a game looking clean, which matters once a filter is on: the
     // game stays visible as if it had been checked and cleared. Mark those so the gap is visible
-    // (idea from seeeeew/aiwarningforsteam, which flags failed search-row checks).
     function errBadge(el, id) {
         if (!filtering() || !el.isConnected) return;
         if (badgeKind(el) === 'desc') return;                    // the capsule of this card carries it
@@ -643,7 +678,9 @@
             const t = m.el.matches('.hover_title, .tab_title') ? m.el : m.el.querySelector('.hover_title, .tab_title');
             if (!t) { m.kind = 'corner'; return placeBadge(m); }   // a preview with no title node
             m.node.classList.add('sgai_cap', 'sgai_inline');
-            t.appendChild(m.node);
+            // A space first: the popup's title is read as text elsewhere, and appending straight
+            // onto it turns "Ai Vpet" into "Ai VpetAI".
+            if (t.lastChild !== m.node) t.append(' ', m.node);
             return;
         }
         if (m.kind === 'desc') {
@@ -724,13 +761,30 @@
     // Returns { t, sure }: the card, and whether its boundary was actually recognised (the name
     // was found, or a container named for the app). Not sure means the walk may have run before
     // React finished drawing the card, so heal() looks again for a while.
-    function hideTarget(el, kind, id, name) {
+    // A chart row and a bare capsule carry no name at all. For a game the user hid by hand, doing
+    // nothing is not an option — half a row left behind is worse — so the card is taken by shape
+    // instead: grow while nothing else objects, and stop well before anything page-sized. The
+    // name usually arrives later (the lookup fills it in), and heal() then re-derives properly.
+    const BLIND_AREA = 25;                                   // an unnamed card is not 25x its capsule
+    function blindTarget(t, id) {
+        const start = t.getBoundingClientRect();
+        const area = Math.max(1, start.width * start.height);
+        for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
+            if (foreignApp(n, id) || headingOutside(n, t) || pageSized(n)) break;
+            const r = n.getBoundingClientRect();
+            if (r.width * r.height > area * BLIND_AREA) break;
+            t = n;
+        }
+        return { t, sure: false };
+    }
+
+    function hideTarget(el, kind, id, name, blind) {
         if (kind === 'title') return null;
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
-        const want = [...new Set([norm(name), norm(capsuleAlt(t))])].filter(Boolean);
-        // With no name we cannot tell this game's card from the page around it. Hiding a guess
-        // would strand half a card or eat a section, so filter nothing and leave the badge.
-        if (!want.length) return null;
+        const want = [...new Set([norm(name), norm(titleNear(t)), norm(capsuleAlt(t))])].filter(Boolean);
+        // With no name we cannot tell this game's card from the page around it. For the AI filter
+        // that means leaving it alone — hiding a guess would strand half a card or eat a section.
+        if (!want.length) return blind ? blindTarget(t, id) : null;
         let named = namesGame(norm(spacedText(t)), want) || namesGame(norm(t.textContent), want), scoped = false;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
@@ -744,6 +798,10 @@
             if (namedIn(n, t, want)) { t = n; named = true; continue; }
             break;                                           // somebody else's text: card ended below
         }
+        // Nothing here said the game's name — a grid card whose only text is a "More like this"
+        // button. For a game the user hid by hand, fall back to shape rather than leave the
+        // button and price sitting where the card was.
+        if (!named && !scoped && blind) return blindTarget(t, id);
         return { t, sure: named || scoped };
     }
 
@@ -819,12 +877,20 @@
         return m;
     }
 
-    // A name for the list when the lookup has none and the capsule's image has no alt text — a
-    // search row, for one. Steam writes the game's name in a title element inside the card.
-    const TITLE_NEAR = '.title, .StoreSaleWidgetTitle, .tab_item_name, .app_name, .hover_title, [class*="Title"]';
+    // The name Steam writes inside the card. Named title elements only: a loose [class*="Title"]
+    // also matches Steam's own column labels, which put a game on the list called "Tags".
+    const TITLE_NEAR = '.title, .StoreSaleWidgetTitle, .tab_item_name, .app_name, .hover_title, ' +
+        '.search_name > span, .apphub_AppName, [class*="AppName"], [class*="GameName"]';
     function titleNear(el) {
         const card = el.closest('[data-ds-appid], a[href*="/app/"]') || el;
-        const t = card.querySelector(TITLE_NEAR) || card.parentElement?.querySelector(TITLE_NEAR);
+        let t = card.querySelector(TITLE_NEAR);
+        // One step out, but only while that step still talks about this game alone — otherwise the
+        // name of the card next door would be picked up.
+        if (!t) {
+            const up = card.parentElement;
+            const ids = up && new Set([...up.querySelectorAll('a[href*="/app/"]')].map(appIdOf).filter(Boolean));
+            if (ids && ids.size <= 1) t = up.querySelector(TITLE_NEAR);
+        }
         return ((t && t.textContent) || '').replace(/\s+/g, ' ').trim().slice(0, 120);   // as written
     }
 
@@ -834,7 +900,17 @@
             const i = ownMarks.findIndex(m => m.el === el && m.id === id);
             if (i > -1) { ownMarks[i].target?.classList.remove('sgai_own'); ownMarks.splice(i, 1); }
         } else {
-            hidden[id] = ((cacheGet(id) || {}).name || capsuleAlt(el) || titleNear(el) || '').slice(0, 120);
+            hidden[id] = ((cacheGet(id) || {}).name || titleNear(el) || capsuleAlt(el) || '').slice(0, 120);
+            // What a listing calls a game is a guess: a chart row carries no name at all, and a
+            // hover preview's images are screenshots, whose alt text reads "<game>'s screenshot 1".
+            // So show the guess at once and then settle it against the game's own page, which is
+            // one request, cached from then on.
+            lookup(id, true).then(d => {
+                if (!d || !d.name || !(id in hidden) || hidden[id] === d.name) return;
+                hidden[id] = d.name.slice(0, 120);
+                saveHidden();
+                healOwn();                                   // a real name can find a better card edge
+            }).catch(() => { /* the game stays on the list under whatever the page called it */ });
             ownEntry(el, id);
             // Every capsule for that game on this page, not just the one under the pointer: a game
             // can be in a row, a carousel and a sidebar at once, and half-hiding it is worse.
@@ -845,11 +921,11 @@
     }
 
     // Same card-growing as the AI filter, so a hidden game takes its title, price and buttons with
-    // it. With no name to grow by, the capsule itself is hidden: the user asked for this one by
-    // hand, so doing nothing would be the wrong answer.
+    // it — and with no name to grow by it falls back to shape (see blindTarget), because the user
+    // asked for this one by hand and half a card left behind is the worst answer.
     function markOwn(m) {
         const want = m.id in hidden;
-        const found = want ? hideTarget(m.el, 'corner', m.id, hidden[m.id] || (cacheGet(m.id) || {}).name) : null;
+        const found = want ? hideTarget(m.el, 'corner', m.id, hidden[m.id] || (cacheGet(m.id) || {}).name, true) : null;
         const t = want ? ((found && found.t) || m.el) : null;
         m.sure = !want || !found || found.sure;
         if (m.target && m.target !== t) m.target.classList.remove('sgai_own');
@@ -984,9 +1060,22 @@
             }
         }
         const el = target.closest('[data-sgai-id], [data-ds-appid], a[href*="/app/"]');
-        if (!el) return null;
-        const id = el.dataset.sgaiId || appIdOf(el);
-        return validId(id) ? { el, id, anchor: el, beside: false } : null;
+        if (el) {
+            const id = el.dataset.sgaiId || appIdOf(el);
+            if (validId(id)) return { el, id, anchor: el, beside: false };
+        }
+        // Pointing at a row's padding — a chart row, a table cell — is still pointing at that game.
+        // Take the nearest box around the pointer that talks about exactly one game.
+        for (let n = target, i = 0; n && i < 4 && n !== document.body; n = n.parentElement, i++) {
+            const links = [...n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')];
+            const ids = new Set(links.map(appIdOf).filter(Boolean));
+            if (ids.size !== 1) continue;
+            const r = n.getBoundingClientRect();
+            if (r.width < 120 || r.height < 30) continue;
+            const id = [...ids][0];
+            return { el: n, id, anchor: onScreen(n.querySelector('.WishlistButton')) || n, beside: !!onScreen(n.querySelector('.WishlistButton')) };
+        }
+        return null;
     }
     const inBox = (el, x, y) => {
         if (!el || !el.isConnected) return false;
@@ -1047,8 +1136,22 @@
     // is still where we put it costs two isConnected checks and nothing else. Re-deriving the
     // hide target walks ancestors and queries their subtrees, which on a long search page is what
     // turned this into half a second of blocked main thread per batch.
+    // Both filters are CSS hanging off two attributes on <html>. Some Steam pages — the charts
+    // app, which re-renders the whole document — drop them, and then nothing is hidden at all.
+    // Cheap to check, so check whenever we touch the page, and watch for it besides.
+    function keepFlags() {
+        const d = document.documentElement;
+        if (d.dataset.sgaiMode !== MODE) applyMode();
+        if (d.dataset.sgaiOwn !== OWN) applyOwn();
+    }
+    if (typeof MutationObserver === 'function') {
+        new MutationObserver(keepFlags).observe(document.documentElement,
+            { attributes: true, attributeFilter: ['data-sgai-mode', 'data-sgai-own'] });
+    }
+
     const RECHECKS = 20;                                     // sweeps an unrecognised card edge is retried
     function heal(force) {
+        keepFlags();
         healOwn();
         for (let i = managed.length - 1; i >= 0; i--) {
             const m = managed[i];
@@ -1175,6 +1278,9 @@
             seen.add(el);
             el.dataset.sgaiId = id;
             el.dataset.sgai = 'pending';
+            // A game the user hid goes now, wherever it is on the page. Waiting for it to scroll
+            // into view, as the AI lookups do, would leave it sitting there further down the list.
+            if (id in hidden) ownEntry(el, id);
             io.observe(el);
         }
     }
@@ -1281,8 +1387,8 @@
     addEventListener('popstate', onNavigate);
 
     /* ---------------- eye toggle in Steam's global header ---------------- */
-    // One control for every mode, on the page itself — the same eye the VRChat script uses, so
-    // nothing has to be toggled from the userscript manager's menu.
+    // One control for every mode, on the page itself, so nothing has to be reached for in the
+    // userscript manager's menu.
     const EYE = {
         skip:  { open: false, label: 'listings not checked' },
         badge: { open: true,  label: 'badge disclosed games' },
@@ -1420,7 +1526,7 @@
     // taller than a text link, so it hangs below their centre line, by a different amount in the
     // logged-in and logged-out headers. Rather than guess a margin, measure a real sibling and
     // nudge onto its centre with a transform, which moves the button without disturbing the
-    // layout that was just measured. (Same measure-a-neighbour trick as the VRChat script.)
+    // layout that was just measured.
     function alignEye() {
         if (!eye || !eye.isConnected || eye.classList.contains('sgai_eye_float')) return;
         setEyeShift(0);                                      // measure untransformed
