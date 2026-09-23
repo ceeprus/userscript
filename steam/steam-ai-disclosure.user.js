@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.31
+// @version      2.32
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -237,7 +237,9 @@
         /* A carousel laid out again over the slides still in it (see packCarousel). Sizes come from
            custom properties on the carousel: --sgai-m slides left, --sgai-v on screen at once,
            --sgai-t the thumb's share, --sgai-i the first one showing. */
-        .sgai_slide_gone{display:none !important;}
+        .sgai_slide_gone,.sgai_card_gone,.sgai_row_gone,.sgai_row_packed > .sgai_spacer{display:none !important;}
+        /* A sale row (2 games over 3) with some hidden: the rest centred, at the width they had. */
+        .sgai_row_packed{grid-template-columns:var(--sgai-cols) !important;justify-content:center !important;}
         .sgai_packed .carousel__slider-tray{width:calc(var(--sgai-m) / var(--sgai-v) * 100%) !important;
             transform:translateX(calc(var(--sgai-i) / var(--sgai-m) * -100%)) !important;}
         .sgai_packed .carousel__slider-tray > .carousel__slide{width:calc(100% / var(--sgai-m)) !important;}
@@ -581,7 +583,9 @@
             } catch (e) { console.warn('[SteamGameAI] could not set up carousel repacking', e); }
         };
         const now = document.getElementById('application_config');
-        if (now) return setUp(now);                          // already there: in time or not, try
+        // Already there: started after the page's lists, perhaps too late for Steam to see them
+        // pruned. Noted on <html> so a report can say so; the attempt is made all the same.
+        if (now) { document.documentElement.dataset.sgaiLate = document.readyState; return setUp(now); }
         if (document.readyState !== 'loading') return;
         const found = n => n.nodeType === 1 && (n.id === 'application_config' ? n : n.querySelector && n.querySelector('#application_config'));
         const mo = new MutationObserver(recs => {
@@ -1355,12 +1359,12 @@
                 for (const r of recs) {
                     if (r.target === tray) { touched = true; if (r.attributeName === 'style') moved = true; }
                     else if (r.type === 'attributes' && r.target.parentElement === tray) { remark(r.target); touched = true; }
+                    else if (r.type === 'attributes' && r.attributeName === 'class' && (r.oldValue || '').includes('sgai_')) touched = true;   // a row's or card's mark wiped
                     else if (r.type === 'childList' && [...r.addedNodes].some(n => n.nodeType === 1 && (n.matches('a[href*="/app/"]') || n.querySelector('a[href*="/app/"]')))) touched = true;   // a slide drawn
                 }
                 if (touched) packCarousel(tray, moved);         // not for every change deep inside a card
-            }).observe(tray, { attributes: true, attributeFilter: ['style', 'class'], childList: true, subtree: true });
+            }).observe(tray, { attributes: true, attributeFilter: ['style', 'class'], attributeOldValue: true, childList: true, subtree: true });
         }
-        // A slide is gone when it is hidden itself, or when all that was in it is hidden.
         // A slide is gone when it is hidden itself, or when every game in it is hidden — marked,
         // or already known (the list, the cache) the moment Steam draws it, before it is painted.
         const gone = SLIDES_GONE();
@@ -1369,6 +1373,7 @@
             const links = [...s.querySelectorAll('a[href*="/app/"]')];
             return !!links.length && links.every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
         };
+        for (const sl of slides) packRows(sl, gone);
         let M = 0, before = 0;
         slides.forEach((s, k) => {
             const g = isGone(s);
@@ -1411,6 +1416,35 @@
         }
         root.dataset.sgaiHops = 0;
         root.dataset.sgaiAt = at;
+    }
+    // A page of several games — Steam's sale rows, two over three — with some of them hidden: each
+    // row is laid out again over the games left in it, centred and at the width they had, the way
+    // Steam itself sets a short row; a row with none left folds away, and a page with none left is
+    // dropped from the carousel above. Games cannot move between pages here: those are React's,
+    // and the lists (see pruneGames) are where that is done, on the next load.
+    function packRows(slide, gone) {
+        for (const row of slide.querySelectorAll('.SaleSectionContainer')) {
+            const kids = [...row.children];
+            const cards = kids.filter(k => k.querySelector('a[href*="/app/"]'));
+            if (!cards.length) continue;
+            const off = c => [...c.querySelectorAll('a[href*="/app/"]')].every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
+            let left = 0;
+            for (const c of cards) {
+                const o = off(c);
+                c.classList.toggle('sgai_card_gone', o && !(gone && c.matches(gone)));
+                if (!o) left++;
+            }
+            const packed = left < cards.length;
+            row.classList.toggle('sgai_row_gone', packed && !left);
+            row.classList.toggle('sgai_row_packed', packed && left > 0);
+            for (const k of kids) if (!cards.includes(k)) k.classList.toggle('sgai_spacer', packed);   // Steam's own centring spacers
+            if (packed && left) {
+                const n = +((row.className.match(/ItemCount_(\d+)/) || [])[1]) || cards.length;
+                const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+                const cols = `repeat(${left}, calc((100% - ${(n - 1) * gap}px) / ${n}))`;
+                if (row.style.getPropertyValue('--sgai-cols') !== cols) row.style.setProperty('--sgai-cols', cols);
+            }
+        }
     }
     // Our hide marks on a slide React has just rewritten the class list of. Only when missing:
     // adding a class that is already there still counts as a change to the observer above.
