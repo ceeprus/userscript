@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.37
+// @version      2.38
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -1230,7 +1230,10 @@
     }
     // Spaced first; the plain read still catches a name split by an inline tag ("Half-<b>Life</b>").
     const textOnly = el => el.textContent;
-    const namedIn = (n, t, want) => namesGame(addedText(n, t), want) || namesGame(addedText(n, t, textOnly), want);
+    // A card with no title text — the sale pages' big expanded widget — says its name only on the
+    // artwork: a second capsule beside the details names the card as a title would.
+    const altNamed = (n, t, want) => [...n.querySelectorAll(CAPSULE_IMG)].some(i => !t.contains(i) && namesGame(norm(i.getAttribute('alt')), want));
+    const namedIn = (n, t, want) => namesGame(addedText(n, t), want) || namesGame(addedText(n, t, textOnly), want) || altNamed(n, t, want);
     // A heading beside the card is a section's — unless it is the game's name, exactly: then it is
     // the card's own title, set above the capsule rather than inside it. ("Half-Life Franchise"
     // names the game too, and is a section.)
@@ -1264,6 +1267,12 @@
 
     function hideTarget(el, kind, id, name, blind) {
         if (kind === 'title') return null;
+        // A sale widget's description is one part of the card its capsule makes: take that card.
+        // Grown from the text alone it stops at the tags below it, and half the card stays.
+        if (el.matches('.StoreSaleWidgetShortDesc')) {
+            const a = capsuleNear(el, id), r = a && hideTarget(a, 'corner', id, name, blind);
+            if (r && r.t.contains(el)) return r;
+        }
         let t = el.closest('a[href*="/app/"]') || el.closest('[data-ds-appid]') || el;
         const want = [...new Set([norm(name), norm(titleNear(t)), norm(capsuleAlt(t))])].filter(Boolean);
         // With no name we cannot tell this game's card from the page around it. For the AI filter
@@ -1287,6 +1296,15 @@
         // button and price sitting where the card was.
         if (!named && !scoped && blind) return blindTarget(t, id);
         return { t, sure: named || scoped };
+    }
+
+    // The nearest capsule of this game around a node: a link to it holding its artwork.
+    function capsuleNear(el, id) {
+        for (let n = el.parentElement, i = 0; n && i < 6; n = n.parentElement, i++) {
+            const l = [...n.querySelectorAll('a[href*="/app/"]')].find(l => appIdOf(l) === id && l.querySelector(CAPSULE_IMG));
+            if (l) return l;
+        }
+        return null;
     }
 
     // Is this container named for this app — e.g. the curator page's #app-ctn-<appid>? Such an id
@@ -1972,7 +1990,7 @@
         if (!target || !target.closest) return null;
         // A sale widget is a whole card — image on one side, title, tags and buttons on the other —
         // and pointing at its text half is still pointing at that game.
-        const card = target.closest('.StoreSaleWidgetOuterContainer');
+        const card = target.closest('.StoreSaleWidgetOuterContainer, .LibraryAssetExpandedDisplay');
         if (card) {
             const id = appIdOf(card.querySelector('a[href*="/app/"]'));
             if (validId(id)) return { el: card, id };
@@ -2209,15 +2227,19 @@
 
     // Find the app id for an element that has no data-ds-appid or /app/ link (sale widgets, the
     // homepage preview panel) by climbing outward and reading the first Steam asset URL — capsule
-    // <img>, CSS background-image, or trailer <source>.
+    // <img>, CSS background-image, or trailer <source>. A trailer's poster sits under /apps/ too,
+    // but in the trailer's own folder — /apps/<movie id>/…/movie_full.jpg — so it is passed over.
+    const ASSET = 'img[src*="/apps/"], [data-background-image-url*="/apps/"], [style*="/apps/"], source[src*="/store_trailers/"]';
+    const assetUrl = a => a.getAttribute('src') || a.getAttribute('data-background-image-url') || a.getAttribute('style') || '';
+    const POSTER = /\/movie[\w.-]*\.(?:jpe?g|png|webp)/i;
     function widgetAppId(node) {
         for (let el = node, i = 0; el && i < 6; el = el.parentElement, i++) {
             const a = el.querySelector('a[href*="/app/"]');
             let m = a && a.getAttribute('href').match(/\/app\/(\d+)/);
             if (m) return m[1];
-            const asset = el.querySelector('img[src*="/apps/"], [data-background-image-url*="/apps/"], [style*="/apps/"], source[src*="/store_trailers/"]');
+            const asset = [...el.querySelectorAll(ASSET)].find(x => !POSTER.test(assetUrl(x)));
             if (asset) {
-                const s = asset.getAttribute('src') || asset.getAttribute('data-background-image-url') || asset.getAttribute('style') || '';
+                const s = assetUrl(asset);
                 m = s.match(/\/apps\/(\d+)\//) || s.match(/\/store_trailers\/(?:steam\/apps\/)?(\d+)\//);
                 if (m) return m[1];
             }
