@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.30
+// @version      2.31
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -246,6 +246,20 @@
         .sgai_packed [data-sgai-zone="prev"]{width:calc((var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m) * 100%) !important;}
         .sgai_packed [data-sgai-zone="next"]{width:calc((1 - (var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m)) * 100%) !important;}
         .sgai_pack_none .carousel__back-button,.sgai_pack_none .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
+        /* Export / import of the hidden list: a small dialog in the store's own colours. */
+        .sgai_dialog_back{position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.65);}
+        .sgai_dialog{box-sizing:border-box;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:20px 22px;
+            background:#1b2838;color:#c6d4df;border-radius:4px;box-shadow:0 10px 40px rgba(0,0,0,.7);font:14px/1.45 "Motiva Sans",Arial,sans-serif;text-align:left;}
+        .sgai_dialog h2{margin:0 0 8px;padding:0;font:normal 20px/1.2 "Motiva Sans",Arial,sans-serif;color:#fff;text-transform:none;letter-spacing:0;}
+        .sgai_dialog p{margin:0 0 12px;}
+        .sgai_dialog textarea{display:block;box-sizing:border-box;width:100%;height:210px;margin:0;padding:8px 10px;resize:vertical;
+            background:#0e141b;color:#c6d4df;border:1px solid #2a475e;border-radius:3px;font:12px/1.45 Consolas,"Courier New",monospace;white-space:pre;}
+        .sgai_dialog_status{min-height:1.45em;margin-top:10px;color:#a4d007;}
+        .sgai_dialog_row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px;}
+        .sgai_dialog button{padding:7px 16px;border:0;border-radius:2px;cursor:pointer;font:14px "Motiva Sans",Arial,sans-serif;color:#fff;background:#3d4450;}
+        .sgai_dialog button:hover{background:#464d58;}
+        .sgai_dialog button.sgai_dialog_main{background:linear-gradient(90deg,#06bfff,#2d73ff);}
+        .sgai_dialog button.sgai_dialog_main:hover{background:linear-gradient(90deg,#29c8ff,#4e89ff);}
     `;
 
     // A page can ship a Content-Security-Policy that refuses an injected <style> — style-src
@@ -1520,6 +1534,137 @@
         syncOwnButtons();
     }
 
+    /* ---------------- sharing the hidden list ---------------- */
+    // Export: the list as readable text — a store link and a name per game — to paste anywhere,
+    // and the same as a .json file to send. Import: either of those, or any text with store links
+    // or appids in it; the games are added to the list, never replacing it. Opened from the
+    // manager's menu as a small dialog on the page, so that copying, saving and picking a file
+    // happen on the user's own click, which clipboards, downloads and file pickers all insist on.
+    const SHARE_TYPE = 'steam-hidden-games';
+    const shareName = n => String(n || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 120);
+
+    function shareText(list) {
+        const ids = Object.keys(list);
+        return [`Steam games hidden with ${INFO.name || 'Steam AI Content Disclosure Badge'} (${ids.length})`,
+            ...ids.map(id => `https://store.steampowered.com/app/${id}/` + (list[id] ? '  ' + list[id] : ''))].join('\n');
+    }
+
+    // Whatever was pasted or picked → { appid: name }, or null when there is nothing in it.
+    function parseShared(text) {
+        text = String(text || '').trim();
+        if (!text) return null;
+        const out = {};
+        let data;
+        try { data = JSON.parse(text); } catch (e) { data = undefined; }
+        if (data !== undefined) {                            // an exported file, or a plain JSON list
+            const games = data && typeof data === 'object' && !Array.isArray(data) && data.games ? data.games : data;
+            if (Array.isArray(games)) {
+                for (const g of games) {
+                    const id = String(g && typeof g === 'object' ? (g.appid ?? g.id) : g);
+                    if (validId(id)) out[id] = shareName(g && g.name);
+                }
+            } else if (games && typeof games === 'object') {
+                for (const [id, name] of Object.entries(games)) if (validId(id)) out[id] = shareName(typeof name === 'string' ? name : '');
+            }
+        } else {                                             // text: store links or appids, one a line
+            for (const line of text.split(/\r?\n/)) {
+                const m = line.match(/\/app\/(\d+)/) || line.match(/^\s*(\d{1,10})(?!\S)/);
+                if (!m || !validId(m[1])) continue;
+                out[m[1]] = shareName(line.replace(/https?:\/\/\S+/g, '').replace(/^\s*\d+(?!\S)/, ''));
+            }
+        }
+        return Object.keys(out).length ? out : null;
+    }
+
+    function importShared(list) {
+        hidden = loadHidden();                               // another tab may have changed it
+        let added = 0;
+        for (const [id, name] of Object.entries(list)) if (!(id in hidden)) { hidden[id] = name; added++; }
+        if (added) {
+            saveHidden();
+            for (const el of document.querySelectorAll('[data-sgai-id]')) if (el.dataset.sgaiId in hidden) ownEntry(el, el.dataset.sgaiId);
+            syncOwnButtons();
+            packSoon();
+        }
+        return added;
+    }
+
+    function shareDialog(mode) {
+        document.querySelector('.sgai_dialog_back')?.remove();
+        const make = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+        const back = make('div', 'sgai_dialog_back'), box = make('div', 'sgai_dialog');
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-modal', 'true');
+        const status = make('div', 'sgai_dialog_status');
+        const row = make('div', 'sgai_dialog_row');
+        const button = (label, act, main) => { const b = make('button', main ? 'sgai_dialog_main' : '', label); b.type = 'button'; b.addEventListener('click', act); row.append(b); return b; };
+        const close = () => { back.remove(); removeEventListener('keydown', onKey, true); };
+        const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+        back.addEventListener('click', e => { if (e.target === back) close(); });
+        addEventListener('keydown', onKey, true);
+        const text = make('textarea');
+        text.spellcheck = false;
+
+        if (mode === 'export') {
+            const list = loadHidden(), n = Object.keys(list).length;
+            box.append(make('h2', '', 'Export hidden games'));
+            if (!n) {
+                box.append(make('p', '', 'No games are hidden yet.'));
+            } else {
+                box.append(make('p', '', `${n} game${n === 1 ? '' : 's'}. Send the text or the file; anyone with this script can add them to their own list with "Import hidden games".`));
+                text.value = shareText(list);
+                text.readOnly = true;
+                box.append(text);
+                button('Copy text', async () => {
+                    try { await navigator.clipboard.writeText(text.value); }
+                    catch (e) { text.select(); document.execCommand('copy'); }   // older browsers, odd frames
+                    status.textContent = 'Copied.';
+                }, true);
+                button('Save file', () => {
+                    const file = JSON.stringify({ type: SHARE_TYPE, version: 1, exported: new Date().toISOString(), count: n, games: list }, null, 2);
+                    const url = URL.createObjectURL(new Blob([file], { type: 'application/json' }));
+                    const a = make('a');
+                    a.href = url;
+                    a.download = 'steam-hidden-games.json';
+                    document.body.append(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 10000);
+                    status.textContent = 'Saved as steam-hidden-games.json.';
+                });
+            }
+        } else {
+            box.append(make('h2', '', 'Import hidden games'),
+                make('p', '', 'Paste a shared list — or choose the file someone sent you. The games are added to your list; nothing on it is removed.'));
+            text.placeholder = 'https://store.steampowered.com/app/…';
+            box.append(text);
+            const run = source => {
+                const list = parseShared(source);
+                if (!list) { status.textContent = 'No games found in that — expected store links, appids, or an exported file.'; return; }
+                const all = Object.keys(list).length, added = importShared(list);
+                status.textContent = `Added ${added} game${added === 1 ? '' : 's'}` + (all > added ? ` (${all - added} already on your list).` : '.');
+            };
+            const file = make('input');
+            file.type = 'file';
+            file.accept = '.json,.txt,application/json,text/plain';
+            file.hidden = true;
+            file.addEventListener('change', () => {
+                const f = file.files && file.files[0];
+                if (!f) return;
+                if (f.size > 2e6) { status.textContent = 'That file is too big to be a list of games.'; return; }
+                f.text().then(t => { text.value = t; run(t); }).catch(() => { status.textContent = 'Could not read that file.'; });
+            });
+            box.append(file);
+            button('Import', () => run(text.value), true);
+            button('Choose file…', () => file.click());
+        }
+        button('Close', close);
+        box.append(status, row);
+        back.append(box);
+        document.body.append(back);
+        (mode === 'import' ? text : row.querySelector('button')).focus();
+    }
+
     function unhideAll() {
         hidden = loadHidden();                               // the count as it stands, other tabs included
         const n = hiddenCount();
@@ -1970,7 +2115,7 @@
 
     // The hide button redraws its icon as it moves between games; that must not read as the page
     // changing, or every pointer move over a listing would set off a full sweep.
-    const ourNode = n => n.nodeType === 1 && !!n.closest('.sgai_badge, .sgai_eye, .sgai_hide, .sgai_eye_follow');
+    const ourNode = n => n.nodeType === 1 && !!n.closest('.sgai_badge, .sgai_eye, .sgai_hide, .sgai_eye_follow, .sgai_dialog_back');
     function worthLooking(records) {
         if (!records) return true;
         for (const r of records) {
@@ -2381,6 +2526,8 @@
             alert(`AI-disclosed games: ${EYE[MODE].label}.\n(The menu label updates on the next page load.)`);
         });
         GM_registerMenuCommand(`Show all games you hid (${hiddenCount()})`, unhideAll);
+        GM_registerMenuCommand(`Export hidden games (${hiddenCount()})`, () => shareDialog('export'));
+        GM_registerMenuCommand('Import hidden games', () => shareDialog('import'));
         GM_registerMenuCommand('Clear AI disclosure cache', () => {
             if (typeof GM_listValues !== 'function') {        // not every manager has it
                 alert('This userscript manager cannot list stored values, so the cache can only be\ncleared from its own storage editor.');
