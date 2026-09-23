@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.26
+// @version      2.27
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -106,6 +106,7 @@
         GM_setValue('sgai:own', OWN);
         applyOwn();
         syncOwnButtons();
+        packSoon();
     }
     applyOwn();
     // Steam's React pages navigate with pushState, so this is not fixed for the life of the tab.
@@ -233,6 +234,18 @@
         .sgai_eye_follow > .sgai_eye{float:none;margin:0;background:rgba(0,0,0,.75);
             box-shadow:0 2px 8px rgba(0,0,0,.5);}
         .sgai_eye_follow:not(.sgai_on){opacity:0 !important;visibility:hidden;pointer-events:none;}
+        /* A carousel laid out again over the slides still in it (see packCarousel). Sizes come from
+           custom properties on the carousel: --sgai-m slides left, --sgai-v on screen at once,
+           --sgai-t the thumb's share, --sgai-i the first one showing. */
+        .sgai_slide_gone{display:none !important;}
+        .sgai_packed .carousel__slider-tray{width:calc(var(--sgai-m) / var(--sgai-v) * 100%) !important;
+            transform:translateX(calc(var(--sgai-i) / var(--sgai-m) * -100%)) !important;}
+        .sgai_packed .carousel__slider-tray > .carousel__slide{width:calc(100% / var(--sgai-m)) !important;}
+        .sgai_packed [data-sgai-thumb]{left:calc(var(--sgai-i) / var(--sgai-m) * 100%) !important;
+            right:calc((1 - (var(--sgai-i) + var(--sgai-t)) / var(--sgai-m)) * 100%) !important;}
+        .sgai_packed [data-sgai-zone="prev"]{width:calc((var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m) * 100%) !important;}
+        .sgai_packed [data-sgai-zone="next"]{width:calc((1 - (var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m)) * 100%) !important;}
+        .sgai_pack_start .carousel__back-button,.sgai_pack_end .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
     `;
 
     // A page can ship a Content-Security-Policy that refuses an injected <style> — style-src
@@ -858,7 +871,10 @@
     function checkBadge(el, on) {
         const had = el.querySelector(':scope > .sgai_check');
         if (!on) { if (had) { had.remove(); releaseHost(el); } return; }
-        if (!filtering() || had || !ensureHost(el)) return;
+        if (!filtering() || had) return;
+        // A capsule whose image has not arrived yet is a sliver; a spinner would hang off it.
+        const box = el.getBoundingClientRect();
+        if (box.width < 40 || box.height < 30 || !ensureHost(el)) return;
         const b = document.createElement('span');
         b.className = 'sgai_badge sgai_cap sgai_check';
         b.title = `Checking for an AI Generated Content Disclosure…
@@ -1170,6 +1186,93 @@
         markAI(m);                                           // the target decides where blur puts the badge
         placeBadge(m);
         managed.push(m);
+        packSoon();
+    }
+
+    /* ---------------- carousels with games hidden after Steam built them ---------------- */
+    // A carousel Steam built with a hidden game still in it — a game hidden mid-visit, an AI game
+    // checked for the first time, or a list we could not reach (a signed-in user's personalised
+    // rows) — loses the slide but keeps counting it: its strip is sized for every slide, its
+    // scrollbar thumb is sized for every slide, and the last pages scroll into empty space.
+    // Steam's carousel is React's, so its count cannot be changed; the layout can. We work out
+    // what the carousel would look like with only the slides that are left and lay that over it
+    // in CSS: strip width, slide width, where the strip sits, the scrollbar's thumb and its two
+    // click zones, and the arrows at the new ends. Nothing of Steam's is moved or removed.
+    //
+    // pure-react-carousel draws the strip `N / V` wide and moves it by `-i / N`; the thumb runs
+    // `i / N` to `(i + V) / N`. Its index `i` keeps counting every slide, so the window shows the
+    // i'th slide still left (never past the last full page), and a click that only stepped over
+    // hidden slides is passed on, so no click is ever spent on nothing.
+    const SLIDES_GONE = () => (OWN === 'hide' ? '.sgai_own' : '') + (OWN === 'hide' && MODE === 'hide' ? ',' : '') + (MODE === 'hide' ? '.sgai_ai' : '');
+    const packWatch = new WeakSet();
+    let packFrame = 0;
+    const packSoon = () => { if (!packFrame) packFrame = requestAnimationFrame(() => { packFrame = 0; packCarousels(); }); };
+
+    function packCarousels() {
+        if (!STYLES_OK) return;
+        for (const tray of document.querySelectorAll('.carousel__slider-tray')) {
+            try { packCarousel(tray); } catch (e) { console.warn('[SteamGameAI] could not pack a carousel', e); }
+        }
+    }
+
+    function packCarousel(tray, stepped) {
+        const root = tray.closest('.carousel') || tray.closest('.carousel__slider')?.parentElement?.parentElement;
+        if (!root) return;
+        const slides = [...tray.children].filter(s => s.classList.contains('carousel__slide'));
+        const N = slides.length, W = parseFloat(tray.style.width), X = /translateX\(\s*(-?[\d.]+)%/.exec(tray.style.transform || '');
+        if (!N || !(W > 0)) return;
+        const V = Math.max(1, Math.round(N * 100 / W));
+        const i = X ? Math.max(0, Math.round(-parseFloat(X[1]) / 100 * N)) : 0;
+        // A slide is gone when it is hidden itself, or when all that was in it is hidden.
+        const gone = SLIDES_GONE();
+        const isGone = s => {
+            if (!gone) return false;
+            if (s.matches(gone)) return true;
+            if (!s.querySelector(gone)) return false;
+            return ![...s.querySelectorAll('a[href*="/app/"]')].some(a => !a.closest(gone));
+        };
+        let M = 0, before = 0;
+        slides.forEach((s, k) => {
+            const g = isGone(s);
+            s.classList.toggle('sgai_slide_gone', g && !s.matches(gone));
+            if (!g) { M++; if (k < i) before++; }
+        });
+        if (!packWatch.has(tray)) {
+            packWatch.add(tray);
+            // React moves the strip by rewriting its style: follow it, and add slides as they load.
+            new MutationObserver(() => packCarousel(tray, true)).observe(tray, { attributes: true, attributeFilter: ['style'], childList: true });
+        }
+        if (M === N) {                                        // nothing gone: Steam's own layout
+            if (root.classList.contains('sgai_packed')) root.classList.remove('sgai_packed', 'sgai_pack_start', 'sgai_pack_end');
+            return;
+        }
+        const last = Math.max(0, M - V);
+        const at = Math.min(before, last);
+        // The thumb and its click zones, found by what they are rather than by Steam's hashed class
+        // names: the thumb is the one element beside the strip placed by both left and right.
+        for (const el of root.querySelectorAll('[style*="left"], [style*="right"]')) {
+            if (el.closest('.carousel__slider')) continue;
+            const st = el.style;
+            if (st.left.endsWith('%') && st.right.endsWith('%')) el.dataset.sgaiThumb = '';
+            else if (st.width.endsWith('%') && el.querySelector('.carousel__back-button')) el.dataset.sgaiZone = 'prev';
+            else if (st.width.endsWith('%') && el.querySelector('.carousel__next-button')) el.dataset.sgaiZone = 'next';
+        }
+        const was = root.dataset.sgaiAt;
+        root.classList.add('sgai_packed');
+        root.classList.toggle('sgai_pack_start', at === 0);
+        root.classList.toggle('sgai_pack_end', at >= last);
+        const put = (k, v) => { if (root.style.getPropertyValue(k) !== String(v)) root.style.setProperty(k, String(v)); };
+        put('--sgai-m', M); put('--sgai-v', V); put('--sgai-t', Math.min(V, M)); put('--sgai-i', at);
+        // Steam stepped, but only over hidden slides: nothing moved on screen. Step again.
+        if (stepped && was !== undefined && String(at) === was && root.dataset.sgaiI !== undefined) {
+            const dir = Math.sign(i - +root.dataset.sgaiI);
+            const btn = dir > 0 && at < last ? root.querySelector('.carousel__next-button')
+                      : dir < 0 && at > 0 ? root.querySelector('.carousel__back-button') : null;
+            root.dataset.sgaiI = i;
+            if (btn) { btn.click(); return; }
+        }
+        root.dataset.sgaiI = i;
+        root.dataset.sgaiAt = at;
     }
 
     /* ---------------- games you hid yourself ---------------- */
@@ -1234,6 +1337,7 @@
         }
         saveHidden();
         syncOwnButtons();                                    // the header count changed
+        packSoon();
     }
 
     // Same card-growing as the AI filter, so a hidden game takes its title, price and buttons with
@@ -1250,6 +1354,7 @@
         if (m.target && m.target !== t) untag(m, ownMarks, 'sgai_own');
         m.target = t;
         if (t) t.classList.add('sgai_own');
+        packSoon();                                          // a carousel may have lost a slide
     }
     function dropOwn(m, i) {
         untag(m, ownMarks, 'sgai_own');
@@ -1294,6 +1399,7 @@
         for (const m of ownMarks.splice(0)) m.target?.classList.remove('sgai_own');
         syncOwnButtons();
         syncHoverButton();
+        packSoon();
     }
 
     // One button, moved to whichever capsule the pointer is over. Fixed to the viewport, so no
@@ -1585,6 +1691,7 @@
         // layout for the next game's measurement — seconds, on a long list after a mode switch.
         const found = todo.map(m => (filtering() ? aiTarget(m) : null));
         todo.forEach((m, i) => { markAI(m, found[i]); placeBadge(m); });
+        packSoon();
     }
 
     /* ---------------- listing scanner (lazy, via IntersectionObserver) ---------------- */
