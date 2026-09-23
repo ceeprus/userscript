@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.36
+// @version      2.37
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -215,6 +215,11 @@
         /* The hidden-list eye, red while it is holding games back. */
         .sgai_eye.sgai_own_eye[data-mode="hide"]{color:${RED} !important;}
         [data-sgai-mode="hide"] .sgai_ai{display:none !important;}
+        /* The front page's takeover banner is a spacer link laid over art drawn behind it. When its
+           game goes, the art goes too — or the page slides up under the art; blurred, so is the art. */
+        [data-sgai-own="hide"] .home_page_body_ctn:has(> .home_page_takeover_link.sgai_own) > :is(.fullscreen-bg,.store_bg_overlay,.static_takeover_ctn,.page_background_holder),
+        [data-sgai-mode="hide"] .home_page_body_ctn:has(> .home_page_takeover_link.sgai_ai) > :is(.fullscreen-bg,.store_bg_overlay,.static_takeover_ctn,.page_background_holder){display:none !important;}
+        [data-sgai-mode="blur"] .home_page_body_ctn:has(> .home_page_takeover_link.sgai_ai:not(:hover)) > :is(.fullscreen-bg,.page_background_holder){filter:blur(12px);}
         /* Blur mode: blur the card's contents, not the card, so nothing reflows and our own badge
            stays legible on top. Hovering reveals the game. */
         [data-sgai-mode="blur"] .sgai_ai:not(:hover) > *:not(.sgai_cap){filter:blur(10px);}
@@ -1187,7 +1192,8 @@
     // Once an ancestor has been recognised as this game's card, the rows below it (price, tags,
     // buttons) are card too and get absorbed — otherwise hiding leaves "-50% $4.99" behind.
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
-        '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn';
+        '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn,' +
+        '#tab_preview_container';                            // the front page's tabs: one preview per game, built on hover
 
     const APP_CAROUSELS = '#recommended_block, [data-featuretarget="storeitems-carousel"], [data-featuretarget="creatorhome-carousel"]';
 
@@ -1298,12 +1304,13 @@
     const REASON = '.home_content_reason, [class*="reason" i]';
     const aside = l => { const r = l.closest(REASON); return !!r && r.getBoundingClientRect().height < 60; };
 
-    // Does this container reference any app other than `id`?
+    // Does this container reference any app other than `id`? A box already found to be another
+    // game's (the scanner's tag) counts, whether or not it links anywhere — a hover preview doesn't.
     function foreignApp(n, id) {
-        const own = (n.getAttribute('data-ds-appid') || '').trim();
+        const own = (n.getAttribute('data-ds-appid') || n.getAttribute('data-sgai-id') || '').trim();
         if (own && own !== id) return true;
-        for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
-            const lid = appIdOf(l);
+        for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid], [data-sgai-id]')) {
+            const lid = l.getAttribute('data-sgai-id') || appIdOf(l);
             if (lid && lid !== id && !aside(l)) return true;
         }
         return false;
