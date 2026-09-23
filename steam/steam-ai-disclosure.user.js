@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.33
+// @version      2.34
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -195,6 +195,17 @@
         .sgai_hide:hover{background:rgba(0,0,0,.97);}
         .sgai_hide svg{display:block;width:64%;height:64%;}   /* it takes the wishlist star size beside one */
         .sgai_hide_on{color:${RED};}
+        /* A game's own page: the same button, after its title (see syncTitleHide) — in the line of
+           text, so it sits with the name; up while the pointer is on the title's row, and kept lit
+           while the game is on the list. */
+        .sgai_title_hide{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;
+            width:22px;height:22px;margin:0 0 0 10px;padding:0;vertical-align:middle;position:relative;top:-2px;   /* level with the AI chip */
+            border-radius:2px;cursor:pointer;background:rgba(0,0,0,.85);color:#fff;opacity:0;transition:opacity .12s;}
+        .sgai_title_hide svg{display:block;width:64%;height:64%;pointer-events:none;}
+        :hover > .apphub_AppName > .sgai_title_hide,:hover > #appHubAppName > .sgai_title_hide,
+        .sgai_title_hide:focus-visible,.sgai_title_hide.sgai_hide_on{opacity:1;}
+        .sgai_title_hide:hover{background:rgba(0,0,0,.97);}
+        @media (hover: none){.sgai_title_hide{opacity:1;}}
         [data-sgai-own="hide"] .sgai_own{display:none !important;}
         /* The list turned off: the games on it stay, faded, so they can be taken back off it. */
         [data-sgai-own="show"] .sgai_own{opacity:.5;filter:grayscale(.8);outline:2px solid rgba(255,93,93,.55);
@@ -1090,7 +1101,7 @@
             void box.offsetWidth;
             box.classList.add('sgai_flash');
         });
-        t.appendChild(b);
+        t.insertBefore(b, t.querySelector(':scope > .sgai_title_hide'));   // straight after the name
     }
 
     // Tag Steam's own disclosure box so it stands out: an amber bar down its side, and our AI chip
@@ -1868,7 +1879,7 @@
     // class, because the hover preview's title is a hashed class that changes with every build.
     // Any of the names the game goes by: a demo's card says "… Demo" while its page, which
     // redirects to the full game, gave the lookup the full game's name.
-    const skipOurs = { acceptNode: n => n.nodeType === 1 && n.matches('.sgai_badge, .sgai_hide')
+    const skipOurs = { acceptNode: n => n.nodeType === 1 && n.matches('.sgai_badge, .sgai_hide, .sgai_title_hide')
         ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT };
     function nameSpot(root, names) {
         const wants = new Set(names.map(norm).filter(Boolean));
@@ -1984,6 +1995,9 @@
         // button jumps to a card on the other side of the screen.
         let c = capsuleUnder(e.target);
         if (c && !inBox(c.el, e.clientX, e.clientY)) c = null;
+        // On a game's own page, that game has a button of its own, after its title; anything else
+        // pointed at there — its header, its media — is the page, not a card.
+        if (c && APP_PAGE_ID && c.id === APP_PAGE_ID && !c.el.closest(APP_CAROUSELS)) c = null;
         if (!c) {
             // Steam lays its own overlay over a capsule when you point at it, and that overlay is
             // not inside the game's link — going by the pointer's position keeps the button up.
@@ -2051,6 +2065,7 @@
     // turned this into half a second of blocked main thread per batch.
     function heal(force) {
         keepFlags();
+        syncTitleHide();
         healOwn(force);
         const todo = [];
         for (let i = managed.length - 1; i >= 0; i--) {
@@ -2219,7 +2234,7 @@
 
     // The hide button redraws its icon as it moves between games; that must not read as the page
     // changing, or every pointer move over a listing would set off a full sweep.
-    const ourNode = n => n.nodeType === 1 && !!n.closest('.sgai_badge, .sgai_eye, .sgai_hide, .sgai_eye_follow, .sgai_dialog_back');
+    const ourNode = n => n.nodeType === 1 && !!n.closest('.sgai_badge, .sgai_eye, .sgai_hide, .sgai_title_hide, .sgai_eye_follow, .sgai_dialog_back');
     function worthLooking(records) {
         if (!records) return true;
         for (const r of records) {
@@ -2295,6 +2310,7 @@
             cacheSet(APP_PAGE_ID, d);
             if (d.ai) { markDisclosure(); titleBadge(d.text); }
             appPageRead = true;
+            syncTitleHide();
         } catch (e) { console.warn('[SteamGameAI] could not read this app page', e); }
     }
 
@@ -2349,7 +2365,36 @@
         }
     }
 
+    // A game's own page: the pointer's button has no card to sit on there — the whole page is that
+    // game — so the title gets one of its own, after the name. It puts the game on the list or
+    // takes it off, for everywhere else in the store; nothing on this page is hidden by it.
+    function syncTitleHide() {
+        if (!STYLES_OK || !APP_PAGE_ID) return;
+        const t = document.querySelector('#appHubAppName, .apphub_AppName');
+        if (!t || t === staleName || document.querySelector('#app_agegate, .agegate_birthday_selector, .agegate_text_container')) return;
+        const id = APP_PAGE_ID;
+        let b = t.querySelector(':scope > .sgai_title_hide');
+        if (!b) {
+            b = makeEyeButton('sgai_title_hide', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleHidden(t, b.dataset.id);
+            });
+            t.appendChild(b);
+        }
+        const on = id in hidden;
+        if (b.dataset.on === String(on) && b.dataset.id === id) return;   // redrawn only when it changes
+        b.dataset.on = on;
+        b.dataset.id = id;
+        b.classList.toggle('sgai_hide_on', on);
+        b.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
+        b.title = (on ? 'Hidden from store listings — click to show it again' : 'Hide this game from store listings') + `\n\n— ${SIGNATURE}`;
+        b.setAttribute('aria-label', on ? 'Show this game in store listings again' : 'Hide this game from store listings');
+        b.setAttribute('aria-pressed', String(on));
+    }
+
     function syncOwnButtons() {
+        syncTitleHide();
         const n = hiddenCount();
         for (const b of [ownEye, followOwn]) {
             if (!b) continue;
