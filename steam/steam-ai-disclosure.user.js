@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.34
+// @version      2.35
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -205,6 +205,7 @@
         :hover > .apphub_AppName > .sgai_title_hide,:hover > #appHubAppName > .sgai_title_hide,
         .sgai_title_hide:focus-visible,.sgai_title_hide.sgai_hide_on{opacity:1;}
         .sgai_title_hide:hover{background:rgba(0,0,0,.97);}
+        .sgai_title_hide.sgai_hide_on{color:${RED};}   /* on the list: red, like the header's eye */
         @media (hover: none){.sgai_title_hide{opacity:1;}}
         [data-sgai-own="hide"] .sgai_own{display:none !important;}
         /* The list turned off: the games on it stay, faded, so they can be taken back off it. */
