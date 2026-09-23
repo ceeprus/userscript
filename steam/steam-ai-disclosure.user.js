@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.27
+// @version      2.28
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -426,14 +426,66 @@
     // reach, so the page gets a small script of its own (the store allows inline scripts). It hands
     // each list response's text over through a DOM attribute — the one thing both worlds see — and
     // a synchronous event, and takes back what we leave of it.
-    const ASK = 'sgai-repack', ASKED = 'data-sgai-in', ANSWER = 'data-sgai-out';
+    const ASK = 'sgai-repack', ASKED = 'data-sgai-in', ANSWER = 'data-sgai-out', PB = 'pb:';
     document.addEventListener(ASK, () => {
         const root = document.documentElement;
-        try { root.setAttribute(ANSWER, pruneText(root.getAttribute(ASKED) || '')); }
-        catch (e) { root.removeAttribute(ANSWER); }
+        try {
+            const text = root.getAttribute(ASKED) || '';
+            root.setAttribute(ANSWER, text.startsWith(PB) ? PB + prunePb(text.slice(PB.length)) : pruneText(text));
+        } catch (e) { root.removeAttribute(ANSWER); }
     });
+
+    // A signed-in user's own rows ("because you've played games tagged …") come from
+    // IStoreQueryService/GetItemsByUserRecommendedTags, which answers in protobuf rather than JSON:
+    // repeated 1 = a row { 1 = its tag, repeated 2 = { 1 = appid } }. Just enough protobuf to take
+    // games out of it, every other field kept byte for byte; handed over as base64.
+    const pbVarint = (b, i) => {
+        let v = 0, shift = 0, x;
+        do { if (i >= b.length) throw new Error('truncated'); x = b[i++]; v += (x & 127) * 2 ** shift; shift += 7; } while (x & 128);
+        return [v, i];
+    };
+    const pbVarintBytes = v => { const out = []; do { let x = v % 128; v = Math.floor(v / 128); if (v) x |= 128; out.push(x); } while (v); return out; };
+    function pbFields(b) {                                   // [{ f, w, start, end, body }] or throws
+        const out = [];
+        for (let i = 0; i < b.length;) {
+            const start = i; let tag, len, body = null;
+            [tag, i] = pbVarint(b, i);
+            const w = tag & 7;
+            if (w === 0) [, i] = pbVarint(b, i);
+            else if (w === 2) { [len, i] = pbVarint(b, i); body = b.subarray(i, i + len); i += len; }
+            else if (w === 5) i += 4;
+            else if (w === 1) i += 8;
+            else throw new Error('wire type ' + w);
+            if (i > b.length || !(tag >> 3)) throw new Error('not protobuf');
+            out.push({ f: tag >> 3, w, start, end: i, body });
+        }
+        return out;
+    }
+    const pbJoin = parts => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let i = 0; for (const p of parts) { out.set(p, i); i += p.length; } return out; };
+    function prunePb(b64) {
+        const raw = atob(b64), b = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) b[i] = raw.charCodeAt(i);
+        let changed = false;
+        const parts = pbFields(b).map(row => {
+            const whole = b.subarray(row.start, row.end);
+            if (row.f !== 1 || row.w !== 2) return whole;
+            const kids = pbFields(row.body);
+            const appid = k => { const id = pbFields(k.body).find(x => x.f === 1 && x.w === 0); return id ? pbVarint(k.body, pbVarint(k.body, id.start)[1])[0] : null; };
+            const items = kids.filter(k => k.f === 2 && k.w === 2);
+            const gone = new Set(items.filter(k => { const id = appid(k); return id !== null && dropped(String(id)); }));
+            if (!gone.size || gone.size === items.length) return whole;   // never empty a row
+            changed = true;
+            const inner = pbJoin(kids.filter(k => !gone.has(k)).map(k => row.body.subarray(k.start, k.end)));
+            return pbJoin([Uint8Array.from(pbVarintBytes((1 << 3) | 2)), Uint8Array.from(pbVarintBytes(inner.length)), inner]);
+        });
+        if (!changed) return b64;
+        const out = pbJoin(parts);
+        let bin = '';
+        for (let i = 0; i < out.length; i += 0x8000) bin += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+        return btoa(bin);
+    }
     // Runs in the page, as its own <script>: nothing from our scope is visible there.
-    function repackInPage(ASK, ASKED, ANSWER) {
+    function repackInPage(ASK, ASKED, ANSWER, PB) {
         const LISTS = /\/contenthub\/ajaxgetcontenthubdata|\/saleaction\/ajaxgetsaledynamicappquery/;
         const handOver = text => {
             const root = document.documentElement;
@@ -468,14 +520,25 @@
             }
             return open.apply(this, arguments);
         };
+        const BINARY = /\/IStoreQueryService\/GetItemsByUserRecommendedTags\//;
         const f = window.fetch;
         if (typeof f === 'function') window.fetch = function (input) {
             const p = f.apply(this, arguments);
             const url = input && typeof input === 'object' && 'url' in input ? input.url : String(input);   // string, URL or Request
+            const redo = (res, body) => new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+            if (BINARY.test(url)) return p.then(res => !res.ok ? res : res.clone().arrayBuffer().then(buf => {
+                const b = new Uint8Array(buf); let bin = '';
+                for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+                const out = handOver(PB + btoa(bin));
+                if (!out.startsWith(PB) || out === PB + btoa(bin)) return res;
+                const raw = atob(out.slice(PB.length)), o = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i++) o[i] = raw.charCodeAt(i);
+                return redo(res, o);
+            }).catch(() => res));
             if (!LISTS.test(url)) return p;
             return p.then(res => res.clone().text().then(t => {
                 const out = handOver(t);
-                return out === t ? res : new Response(out, { status: res.status, statusText: res.statusText, headers: res.headers });
+                return out === t ? res : redo(res, out);
             }).catch(() => res));
         };
     }
@@ -488,7 +551,7 @@
             try { pruneConfig(el); } catch (e) { console.warn('[SteamGameAI] could not repack the page lists', e); }
             try {
                 const s = document.createElement('script');
-                s.textContent = `(${repackInPage})(${JSON.stringify(ASK)}, ${JSON.stringify(ASKED)}, ${JSON.stringify(ANSWER)});`;
+                s.textContent = `(${repackInPage})(${JSON.stringify(ASK)}, ${JSON.stringify(ASKED)}, ${JSON.stringify(ANSWER)}, ${JSON.stringify(PB)});`;
                 (document.head || document.documentElement).appendChild(s);
                 s.remove();                                  // it has run; the element is not needed
             } catch (e) { console.warn('[SteamGameAI] could not set up carousel repacking', e); }
