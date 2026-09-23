@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.32
+// @version      2.33
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -248,6 +248,9 @@
         .sgai_packed [data-sgai-zone="prev"]{width:calc((var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m) * 100%) !important;}
         .sgai_packed [data-sgai-zone="next"]{width:calc((1 - (var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m)) * 100%) !important;}
         .sgai_pack_none .carousel__back-button,.sgai_pack_none .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
+        /* Steam's older carousels (see packLegacy): one game or none left, nothing to page through. */
+        .sgai_legacy_one .carousel_thumbs,.sgai_legacy_one .arrow{visibility:hidden !important;pointer-events:none !important;}
+        .sgai_section_gone{display:none !important;}
         /* Export / import of the hidden list: a small dialog in the store's own colours. */
         .sgai_dialog_back{position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.65);}
         .sgai_dialog{box-sizing:border-box;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:20px 22px;
@@ -546,6 +549,33 @@
             }
             return open.apply(this, arguments);
         };
+        // The front page, and the store's other older pages, pick each carousel's games out of long
+        // lists through one function of Steam's. Take the hidden games out before it picks, and
+        // it picks others in their place: every carousel full, its dots and all.
+        const wrapFilter = g => {
+            const pick = g && g.FilterItemsForDisplay;
+            if (typeof pick !== 'function' || pick.sgai) return;
+            g.FilterItemsForDisplay = function (items) {
+                const args = [...arguments];
+                try {
+                    const id = x => (x && typeof x === 'object' && x.appid) || null;
+                    const ids = Array.isArray(items) ? items.map(id).filter(Boolean) : [];
+                    const kept = ids.length ? JSON.parse(handOver(JSON.stringify({ appids: ids }))).appids : null;
+                    if (Array.isArray(kept) && kept.length < ids.length) {
+                        const keep = new Set(kept.map(String));
+                        args[0] = items.filter(x => !id(x) || keep.has(String(id(x))));
+                    }
+                } catch (e) { /* not a list we know: Steam's own pick */ }
+                return pick.apply(this, args);
+            };
+            g.FilterItemsForDisplay.sgai = true;
+        };
+        if (window.GStoreItemData) wrapFilter(window.GStoreItemData);
+        else try {
+            let v;
+            Object.defineProperty(window, 'GStoreItemData', { configurable: true, enumerable: true,
+                get() { return v; }, set(x) { v = x; wrapFilter(x); } });
+        } catch (e) { /* defined some other way: left alone */ }
         const BINARY = /\/IStoreQueryService\/GetItemsByUserRecommendedTags\//;
         const f = window.fetch;
         if (typeof f === 'function') window.fetch = function (input) {
@@ -1325,12 +1355,13 @@
     // click zones, and the arrows at the new ends. Nothing of Steam's is moved or removed.
     //
     // pure-react-carousel draws the strip `N / V` wide and moves it by `-i / N`; the thumb runs
-    // `i / N` to `(i + V) / N`. Its index `i` keeps counting every slide, so the window shows the
-    // i'th slide still left (never past the last full page), and a click that only stepped over
-    // hidden slides is passed on, so no click is ever spent on nothing. Steam's carousels wrap
-    // around at both ends; so does this one.
+    // `i / N` to `(i + V) / N`. Its index `i` keeps counting every slide, hidden ones too, so a
+    // click can move it over any number of games still shown — one, or none. Our window keeps its
+    // own place instead: it starts where Steam is, and each turn of Steam's is one turn of ours, a
+    // full page of games still shown, the way Steam pages. Steam's carousels wrap around at both
+    // ends; so does this one.
     const SLIDES_GONE = () => (OWN === 'hide' ? '.sgai_own' : '') + (OWN === 'hide' && MODE === 'hide' ? ',' : '') + (MODE === 'hide' ? '.sgai_ai' : '');
-    const packWatch = new WeakSet();
+    const packWatch = new WeakSet(), turned = new WeakMap();
     let packFrame = 0;
     const packSoon = () => { if (!packFrame) packFrame = requestAnimationFrame(() => { packFrame = 0; packCarousels(); }); };
 
@@ -1339,6 +1370,47 @@
         for (const tray of document.querySelectorAll('.carousel__slider-tray')) {
             try { packCarousel(tray); } catch (e) { console.warn('[SteamGameAI] could not pack a carousel', e); }
         }
+        const gone = SLIDES_GONE();
+        for (const box of document.querySelectorAll('.carousel_container')) {
+            try { packLegacy(box, gone); } catch (e) { console.warn('[SteamGameAI] could not pack a carousel', e); }
+        }
+    }
+    // A slide is gone when it is hidden itself, or when every game in it is hidden — marked, or
+    // already known (the list, the cache) the moment Steam draws it, before it is painted.
+    function allGone(s, gone) {
+        if (gone && s.matches(gone)) return true;
+        const links = [...s.querySelectorAll('a[href*="/app/"]')];
+        if (s.matches('a[href*="/app/"]')) links.push(s);
+        return !!links.length && links.every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
+    }
+
+    // Steam's older carousels — the front page's: the big one up top, The Community Recommends,
+    // the paged capsule rows. One item per dot, an item being a game or a page of them. Their
+    // arrows and timer already step over an item that is not shown, so an item whose games are
+    // all hidden goes, and its dot with it; with one left the dots and arrows go too, as Steam
+    // does itself, and with none left the section. The lists they are built from are pruned on
+    // load (repackInPage), so this is for games hidden, or found to be AI, after that.
+    function packLegacy(box, gone) {
+        const list = box.querySelector('.carousel_items');
+        const items = list ? [...list.children] : [];
+        if (!items.length) return;
+        const dots = [...(box.querySelector('.carousel_thumbs')?.children || [])];
+        const paired = dots.length === items.length;
+        let left = 0;
+        items.forEach((it, k) => {
+            const g = allGone(it, gone);
+            it.classList.toggle('sgai_slide_gone', g && !(gone && it.matches(gone)));
+            if (paired) dots[k].classList.toggle('sgai_slide_gone', g);
+            if (!g) left++;
+        });
+        box.classList.toggle('sgai_legacy_one', left <= 1 && left < items.length);
+        const section = box.closest('.home_pagecontent_ctn');
+        (section && section.querySelectorAll('.carousel_container').length === 1 ? section : box).classList.toggle('sgai_section_gone', !left);
+        // The item on show is one that went: step on, as Steam's own arrow does, which skips it.
+        // Not when the arrow is not laid out — the narrow layout scrolls instead of paging.
+        const shown = items.find(it => it.classList.contains('focus'));
+        const next = box.querySelector('.arrow.right');
+        if (left && shown && allGone(shown, gone) && next && next.getClientRects().length) next.click();
     }
 
     function packCarousel(tray, stepped) {
@@ -1351,6 +1423,10 @@
         const i = X ? Math.max(0, Math.round(-parseFloat(X[1]) / 100 * N)) : 0;
         if (!packWatch.has(tray)) {
             packWatch.add(tray);
+            root.addEventListener('click', e => {
+                const b = e.target.closest && e.target.closest('.carousel__next-button, .carousel__back-button');
+                if (b) turned.set(root, { dir: b.matches('.carousel__next-button') ? 1 : -1, t: Date.now() });
+            }, true);
             // React moves the strip by rewriting its style, adds slides as they load, and rewrites
             // every slide's class list as the page turns — which takes our hide marks with it. Put
             // them back here, before the frame is painted, so a hidden game never flashes back.
@@ -1365,14 +1441,8 @@
                 if (touched) packCarousel(tray, moved);         // not for every change deep inside a card
             }).observe(tray, { attributes: true, attributeFilter: ['style', 'class'], attributeOldValue: true, childList: true, subtree: true });
         }
-        // A slide is gone when it is hidden itself, or when every game in it is hidden — marked,
-        // or already known (the list, the cache) the moment Steam draws it, before it is painted.
         const gone = SLIDES_GONE();
-        const isGone = s => {
-            if (gone && s.matches(gone)) return true;
-            const links = [...s.querySelectorAll('a[href*="/app/"]')];
-            return !!links.length && links.every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
-        };
+        const isGone = s => allGone(s, gone);
         for (const sl of slides) packRows(sl, gone);
         let M = 0, before = 0;
         slides.forEach((s, k) => {
@@ -1388,7 +1458,19 @@
             return;
         }
         const last = Math.max(0, M - V);
-        const at = Math.min(before, last);
+        const was = root.dataset.sgaiAt, wasI = root.dataset.sgaiI;
+        let at = was === undefined ? Math.min(before, last) : Math.min(+was, last);   // at first, where Steam is
+        // Steam turned: turn ours a page the same way, from our last page round to the first and
+        // back. Its button tells which way; a drag cannot wrap, so there the sign does.
+        if (stepped && was !== undefined && wasI !== undefined && i !== +wasI && M > V) {
+            const t = turned.get(root);
+            turned.delete(root);
+            const dir = t && Date.now() - t.t < 2000 ? t.dir : Math.sign(i - +wasI);
+            const step = Math.min(V, +root.dataset.sgaiStep || V);
+            at = dir > 0 ? (+was >= last ? 0 : Math.min(+was + step, last)) : (+was <= 0 ? last : Math.max(+was - step, 0));
+            // Steam's own step, where it shows: a turn clear of either end of its strip.
+            if (Math.sign(i - +wasI) === dir && i < N - V && +wasI < N - V) root.dataset.sgaiStep = Math.abs(i - +wasI);
+        }
         // The thumb and its click zones, found by what they are rather than by Steam's hashed class
         // names: the thumb is the one element beside the strip placed by both left and right.
         for (const el of root.querySelectorAll('[style*="left"], [style*="right"]')) {
@@ -1398,23 +1480,11 @@
             else if (st.width.endsWith('%') && el.querySelector('.carousel__back-button')) el.dataset.sgaiZone = 'prev';
             else if (st.width.endsWith('%') && el.querySelector('.carousel__next-button')) el.dataset.sgaiZone = 'next';
         }
-        const was = root.dataset.sgaiAt, wasI = root.dataset.sgaiI;
         root.classList.add('sgai_packed');
         root.classList.toggle('sgai_pack_none', M <= V);      // it all fits: nothing to turn
         const put = (k, v) => { if (root.style.getPropertyValue(k) !== String(v)) root.style.setProperty(k, String(v)); };
         put('--sgai-m', M); put('--sgai-v', V); put('--sgai-t', Math.min(V, M)); put('--sgai-i', at);
         root.dataset.sgaiI = i;
-        // Steam turned the page, but only over hidden slides — or, at an end, only to where our
-        // last page already is: nothing moved on screen. Turn it again, the same way. Steam's
-        // carousels wrap around, so a jump of more than half the strip is a step the other way,
-        // and "next" on our last page ends up, as it should, back at the first.
-        if (stepped && was !== undefined && wasI !== undefined && String(at) === was && M > V) {
-            const d = i - +wasI, dir = Math.abs(d) > N / 2 ? -Math.sign(d) : Math.sign(d);
-            const hops = +(root.dataset.sgaiHops || 0);
-            const btn = dir && hops < N ? root.querySelector(dir > 0 ? '.carousel__next-button' : '.carousel__back-button') : null;
-            if (btn) { root.dataset.sgaiHops = hops + 1; btn.click(); return; }
-        }
-        root.dataset.sgaiHops = 0;
         root.dataset.sgaiAt = at;
     }
     // A page of several games — Steam's sale rows, two over three — with some of them hidden: each
