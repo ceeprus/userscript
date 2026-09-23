@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.25
+// @version      2.26
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -349,12 +349,15 @@
     // before Steam reads it — then Steam packs every page itself, at its own sizes, hover previews
     // and all. Page load only: a game hidden mid-visit leaves its gap until the next load.
     //
-    // The lists come two ways, in two shapes. A hub or sale page ships each carousel's first batch
+    // The lists come two ways, in three shapes. A hub or sale page ships each carousel's first batch
     // as JSON in attributes of #application_config, and downloads the rest:
     //   [{id, apps: [{item_type, id}, …]}, …]            a content hub's lists (data-ch_main_list_data,
     //                                                    /contenthub/ajaxgetcontenthubdata's mainListData)
     //   {appids: […], store_item_keys: ['app_N', …], …}  a section's results (data-section_…,
-    //                                                    data-browser_…, /saleaction/ajaxgetsaledynamicappquery)
+    //                                                    data-browser_…, data-hubitems_…,
+    //                                                    /saleaction/ajaxgetsaledynamicappquery)
+    //   [{appid, …}, …]                                  news and demo events about games
+    //                                                    (data-recent_events_…, data-demoeventstore)
     // The attributes are edited as the parser inserts the element, which is before any of Steam's
     // scripts run; the downloads through a small script in the page (see repackInPage).
 
@@ -373,9 +376,13 @@
             changed = true;
             return kept;
         };
-        if (Array.isArray(v)) {
+        if (Array.isArray(v) && v.some(x => x && Array.isArray(x.apps))) {
             for (const l of v) if (l && Array.isArray(l.apps))
                 l.apps = keep(l.apps, a => !!a && a.item_type === 'app' && dropped(String(a.id)));
+        } else if (Array.isArray(v)) {
+            // An event is about its game, or about the demo it announces.
+            const pruned = keep(v, x => !!x && (dropped(String(x.appid)) || (!!x.demo_appid && dropped(String(x.demo_appid)))));
+            if (pruned !== v) { v.length = 0; v.push(...pruned); }
         } else if (v && typeof v === 'object' && Array.isArray(v.appids)) {
             const before = v.appids.length;
             v.appids = keep(v.appids, id => dropped(String(id)));
@@ -394,7 +401,7 @@
     };
 
     // The page's own copy: the list attributes on #application_config.
-    const LIST_ATTR = /^data-(ch_main_list_data$|section_|browser_)/;
+    const LIST_ATTR = /^data-(ch_main_list_data$|section_|browser_|hubitems_|recent_events_|demoeventstore$)/;
     function pruneConfig(el) {
         for (const a of [...el.attributes]) {
             if (!LIST_ATTR.test(a.name)) continue;
