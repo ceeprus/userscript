@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.24
+// @version      2.25
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -14,7 +14,7 @@
 // @exclude      https://store.steampowered.com/login/*
 // @exclude      https://store.steampowered.com/join/*
 // @exclude      https://store.steampowered.com/account/*
-// @run-at       document-idle
+// @run-at       document-start
 // @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -63,7 +63,7 @@
     // Blur and hide are the modes where an unbadged game reads as "checked and cleared", so they
     // are the ones that need the in-flight and failed-lookup markers.
     const filtering = () => MODE === 'blur' || MODE === 'hide';
-    const applyMode = () => { document.documentElement.dataset.sgaiMode = MODE; };
+    const applyMode = () => { if (document.documentElement) document.documentElement.dataset.sgaiMode = MODE; };
     function setMode(mode) {
         MODE = mode;
         GM_setValue('sgai:mode', MODE);
@@ -100,7 +100,7 @@
     }
     const hiddenCount = () => Object.keys(hidden).length;
     let OWN = GM_getValue('sgai:own', 'hide') === 'show' ? 'show' : 'hide';
-    const applyOwn = () => { document.documentElement.dataset.sgaiOwn = OWN; };
+    const applyOwn = () => { if (document.documentElement) document.documentElement.dataset.sgaiOwn = OWN; };
     function setOwn(mode) {
         OWN = mode;
         GM_setValue('sgai:own', OWN);
@@ -271,17 +271,16 @@
         return undefined;                                    // null = styled, no sheet handle
     }
 
-    const SHEET = installStyles();
-    // Distinguishes "styled, but we hold no sheet" (null) from "nothing applied" (undefined).
-    const STYLES_OK = SHEET !== undefined;
-    if (!STYLES_OK) console.warn('[SteamGameAI] page styles blocked — badges and the eye are stood down');
+    // Set by start(), once there is a page to measure against. SHEET distinguishes "styled, but we
+    // hold no sheet" (null) from "nothing applied" (undefined).
+    let SHEET, STYLES_OK = false, INLINE_STYLES_OK = false;
 
     // Where a position we move is written. The element's own style is the cheap way: writing into
     // a live stylesheet invalidates style for the whole document, measured at about a hundred
     // times the cost per write. A CSP's style-src does not cover styles set from script, but that
-    // is checked here rather than assumed, and a rule in our sheet is kept for the browser that
+    // is checked rather than assumed, and a rule in our sheet is kept for the browser that
     // proves otherwise.
-    const INLINE_STYLES_OK = (() => {
+    function inlineStylesWork() {
         try {
             const t = document.createElement('span');
             t.style.letterSpacing = '3px';
@@ -290,7 +289,7 @@
             t.remove();
             return ok;
         } catch (e) { return false; }
-    })();
+    }
     const sheetRules = {};
     function styleOf(el, sel) {
         if (INLINE_STYLES_OK || !SHEET) return el.style;
@@ -342,6 +341,151 @@
         }
         if (gone) console.info(`[SteamGameAI] pruned ${gone} stale cache entries`);
     }
+
+    /* ---------------- carousels Steam builds from game lists ---------------- */
+    // A game hidden from one of Steam's React carousels leaves a hole: Steam draws only the page
+    // on screen, and its cards are React's, so nothing can be moved in from the next page after the
+    // fact. What can be done is to take the game out of the list Steam builds the carousel from,
+    // before Steam reads it — then Steam packs every page itself, at its own sizes, hover previews
+    // and all. Page load only: a game hidden mid-visit leaves its gap until the next load.
+    //
+    // The lists come two ways, in two shapes. A hub or sale page ships each carousel's first batch
+    // as JSON in attributes of #application_config, and downloads the rest:
+    //   [{id, apps: [{item_type, id}, …]}, …]            a content hub's lists (data-ch_main_list_data,
+    //                                                    /contenthub/ajaxgetcontenthubdata's mainListData)
+    //   {appids: […], store_item_keys: ['app_N', …], …}  a section's results (data-section_…,
+    //                                                    data-browser_…, /saleaction/ajaxgetsaledynamicappquery)
+    // The attributes are edited as the parser inserts the element, which is before any of Steam's
+    // scripts run; the downloads through a small script in the page (see repackInPage).
+
+    // The games that would be taken off the page anyway: the hand-hidden list while it is on, and
+    // games already known to disclose AI while that eye hides them. Blur keeps its games in place,
+    // and a shown list keeps its games faded, so both leave the lists alone.
+    const dropped = id => validId(id) && ((OWN === 'hide' && id in hidden) || (MODE === 'hide' && !!(cacheGet(id) || {}).ai));
+
+    // Prunes either shape in place; true if anything went. A list that would come out empty is left
+    // whole: Steam may not expect an empty carousel, and a game shown beats a broken section.
+    function pruneGames(v) {
+        let changed = false;
+        const keep = (arr, gone) => {
+            const kept = arr.filter(x => !gone(x));
+            if (!kept.length || kept.length === arr.length) return arr;
+            changed = true;
+            return kept;
+        };
+        if (Array.isArray(v)) {
+            for (const l of v) if (l && Array.isArray(l.apps))
+                l.apps = keep(l.apps, a => !!a && a.item_type === 'app' && dropped(String(a.id)));
+        } else if (v && typeof v === 'object' && Array.isArray(v.appids)) {
+            const before = v.appids.length;
+            v.appids = keep(v.appids, id => dropped(String(id)));
+            // The keys run alongside the ids; keep them in step, and only when they were in step.
+            if (Array.isArray(v.store_item_keys) && v.store_item_keys.length === before && v.appids.length < before)
+                v.store_item_keys = v.store_item_keys.filter(k => !(/^app_\d+$/.test(k) && dropped(k.slice(4))));
+        }
+        return changed;
+    }
+    const pruneText = text => {
+        try {
+            const v = JSON.parse(text);
+            const lists = v && !Array.isArray(v) && Array.isArray(v.mainListData) ? v.mainListData : v;
+            return pruneGames(lists) ? JSON.stringify(v) : text;
+        } catch (e) { return text; }                         // not a shape we know: leave it
+    };
+
+    // The page's own copy: the list attributes on #application_config.
+    const LIST_ATTR = /^data-(ch_main_list_data$|section_|browser_)/;
+    function pruneConfig(el) {
+        for (const a of [...el.attributes]) {
+            if (!LIST_ATTR.test(a.name)) continue;
+            const out = pruneText(a.value);
+            if (out !== a.value) el.setAttribute(a.name, out);
+        }
+    }
+    // The downloads. Steam's code reads them in the page's own world, which our sandbox cannot
+    // reach, so the page gets a small script of its own (the store allows inline scripts). It hands
+    // each list response's text over through a DOM attribute — the one thing both worlds see — and
+    // a synchronous event, and takes back what we leave of it.
+    const ASK = 'sgai-repack', ASKED = 'data-sgai-in', ANSWER = 'data-sgai-out';
+    document.addEventListener(ASK, () => {
+        const root = document.documentElement;
+        try { root.setAttribute(ANSWER, pruneText(root.getAttribute(ASKED) || '')); }
+        catch (e) { root.removeAttribute(ANSWER); }
+    });
+    // Runs in the page, as its own <script>: nothing from our scope is visible there.
+    function repackInPage(ASK, ASKED, ANSWER) {
+        const LISTS = /\/contenthub\/ajaxgetcontenthubdata|\/saleaction\/ajaxgetsaledynamicappquery/;
+        const handOver = text => {
+            const root = document.documentElement;
+            try {
+                root.setAttribute(ASKED, text);
+                root.removeAttribute(ANSWER);
+                document.dispatchEvent(new CustomEvent(ASK));  // answered before this returns
+                const out = root.getAttribute(ANSWER);
+                return out === null ? text : out;
+            } catch (e) { return text; }
+            finally { root.removeAttribute(ASKED); root.removeAttribute(ANSWER); }
+        };
+        const X = XMLHttpRequest.prototype, open = X.open;
+        const own = k => Object.getOwnPropertyDescriptor(X, k);
+        const rText = own('responseText'), rBody = own('response');
+        X.open = function (method, url) {
+            delete this.responseText;                        // a reused request starts clean
+            delete this.response;
+            if (LISTS.test(String(url))) {
+                let out = null;
+                const text = () => {
+                    if (out === null) out = handOver(this.responseType === 'json' ? JSON.stringify(rBody.get.call(this)) : rText.get.call(this));
+                    return out;
+                };
+                Object.defineProperty(this, 'responseText', { configurable: true,
+                    get() { return this.readyState === 4 ? text() : rText.get.call(this); } });
+                Object.defineProperty(this, 'response', { configurable: true, get() {
+                    const type = this.responseType;
+                    if (this.readyState !== 4 || (type !== '' && type !== 'text' && type !== 'json')) return rBody.get.call(this);
+                    return type === 'json' ? JSON.parse(text()) : text();
+                } });
+            }
+            return open.apply(this, arguments);
+        };
+        const f = window.fetch;
+        if (typeof f === 'function') window.fetch = function (input) {
+            const p = f.apply(this, arguments);
+            const url = input && typeof input === 'object' && 'url' in input ? input.url : String(input);   // string, URL or Request
+            if (!LISTS.test(url)) return p;
+            return p.then(res => res.clone().text().then(t => {
+                const out = handOver(t);
+                return out === t ? res : new Response(out, { status: res.status, statusText: res.statusText, headers: res.headers });
+            }).catch(() => res));
+        };
+    }
+    // Both halves go in when #application_config turns up — the config Steam's React pages carry,
+    // and the only pages these lists are on. Nowhere else does the page get a script from us. The
+    // parser sets an element's attributes before inserting it, and this callback runs at the
+    // checkpoint before the next script the parser meets: ahead of Steam's own.
+    (function startRepack() {
+        const setUp = el => {
+            try { pruneConfig(el); } catch (e) { console.warn('[SteamGameAI] could not repack the page lists', e); }
+            try {
+                const s = document.createElement('script');
+                s.textContent = `(${repackInPage})(${JSON.stringify(ASK)}, ${JSON.stringify(ASKED)}, ${JSON.stringify(ANSWER)});`;
+                (document.head || document.documentElement).appendChild(s);
+                s.remove();                                  // it has run; the element is not needed
+            } catch (e) { console.warn('[SteamGameAI] could not set up carousel repacking', e); }
+        };
+        const now = document.getElementById('application_config');
+        if (now) return setUp(now);                          // already there: in time or not, try
+        if (document.readyState !== 'loading') return;
+        const found = n => n.nodeType === 1 && (n.id === 'application_config' ? n : n.querySelector && n.querySelector('#application_config'));
+        const mo = new MutationObserver(recs => {
+            for (const r of recs) for (const n of r.addedNodes) {
+                const el = found(n);
+                if (el) { mo.disconnect(); setUp(el); return; }
+            }
+        });
+        mo.observe(document, { childList: true, subtree: true });
+        document.addEventListener('DOMContentLoaded', () => mo.disconnect(), { once: true });
+    })();
 
     /* ---------------- parse disclosure out of a document ---------------- */
     // The disclosure's heading and the box around it, or null.
@@ -1402,11 +1546,6 @@
         if (d.dataset.sgaiMode !== MODE) applyMode();
         if (d.dataset.sgaiOwn !== OWN) applyOwn();
     }
-    if (typeof MutationObserver === 'function') {
-        new MutationObserver(keepFlags).observe(document.documentElement,
-            { attributes: true, attributeFilter: ['data-sgai-mode', 'data-sgai-own'] });
-    }
-
     const RECHECKS = 20;                                     // sweeps an unrecognised card edge is retried
     // Re-add badges that a React re-render removed while the host is still on the page (e.g. the
     // popup media slideshow drops our node every time the trailer loops). Prunes dead hosts, and
@@ -1623,7 +1762,7 @@
         timer = setTimeout(sweep, wait);
     }
     addEventListener('visibilitychange', () => {
-        if (document.hidden) return;
+        if (document.hidden || !started) return;
         // Settings changed in another tab while this one was in the background.
         try {
             const mode = loadMode();
@@ -1635,8 +1774,6 @@
     // documentElement, not body: a page that replaces its whole body would otherwise leave the
     // observer bound to a node nothing is attached to any more, and nothing would ever rescan.
     const pageObserver = new MutationObserver(rescan);
-    pageObserver.observe(document.documentElement, { childList: true, subtree: true });
-    scan();
     // Prune expired rows once a day, when the page has nothing better to do.
     (window.requestIdleCallback || (fn => setTimeout(fn, 5000)))(() => {
         try { sweepCache(); } catch (e) { console.warn('[SteamGameAI] cache sweep failed', e); }
@@ -1665,7 +1802,6 @@
             appPageRead = true;
         } catch (e) { console.warn('[SteamGameAI] could not read this app page', e); }
     }
-    readAppPage();
 
     // A pushState is the only signal that the page became a different page. Re-read what depends
     // on the path, then re-assert every badge: what counts as a card, and whether hiding is
@@ -1976,9 +2112,7 @@
         st.top = top + 'px';
     }
 
-    ensureEye();
-    ensureFollow();
-    // The avatar image and Motiva Sans both land after document-idle and move the header's items,
+    // The avatar image and Motiva Sans both land after the page is parsed and move the header's items,
     // so re-centre once the page has settled, and again whenever the layout changes. At
     // document-idle on a cached page `load` has often already fired, so check before waiting.
     if (document.readyState === 'complete') alignEye(); else addEventListener('load', alignEye);
@@ -2012,4 +2146,28 @@
             alert(`Steam AI cache cleared (${gone} entries).`);
         });
     }
+
+    /* ---------------- start ---------------- */
+    // Everything above only sets things up, and it ran at document-start so the list repack could
+    // get in ahead of Steam. The rest wants a parsed page: a body to measure styles against, the
+    // header for the eyes, the capsules to scan.
+    let started = false;
+    function start() {
+        if (started) return;
+        started = true;
+        SHEET = installStyles();
+        STYLES_OK = SHEET !== undefined;
+        if (!STYLES_OK) console.warn('[SteamGameAI] page styles blocked — badges and the eye are stood down');
+        INLINE_STYLES_OK = inlineStylesWork();
+        keepFlags();
+        new MutationObserver(keepFlags).observe(document.documentElement,
+            { attributes: true, attributeFilter: ['data-sgai-mode', 'data-sgai-own'] });
+        pageObserver.observe(document.documentElement, { childList: true, subtree: true });
+        scan();
+        readAppPage();
+        ensureEye();
+        ensureFollow();
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+    else start();
 })();
