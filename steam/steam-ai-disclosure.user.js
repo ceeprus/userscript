@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.29
+// @version      2.30
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -379,6 +379,12 @@
     // and a shown list keeps its games faded, so both leave the lists alone.
     const dropped = id => validId(id) && ((OWN === 'hide' && id in hidden) || (MODE === 'hide' && !!(cacheGet(id) || {}).ai));
 
+    // What the carousels on this page are about to show, list by list, soonest first: the games
+    // worth checking before they are drawn (see prefetch).
+    const upcomingLists = [], prefetchSeen = new Set();
+    let prefetched = 0, prefetchTimer = 0, prefetchReady = false;   // up here: the lists arrive while the page loads
+    const noteUpcoming = ids => { if (ids.length) upcomingLists.push(ids.map(String)); prefetchSoon(); };
+
     // Prunes either shape in place; true if anything went. A list that would come out empty is left
     // whole: Steam may not expect an empty carousel, and a game shown beats a broken section.
     function pruneGames(v) {
@@ -390,8 +396,10 @@
             return kept;
         };
         if (Array.isArray(v) && v.some(x => x && Array.isArray(x.apps))) {
-            for (const l of v) if (l && Array.isArray(l.apps))
+            for (const l of v) if (l && Array.isArray(l.apps)) {
                 l.apps = keep(l.apps, a => !!a && a.item_type === 'app' && dropped(String(a.id)));
+                noteUpcoming(l.apps.filter(a => a && a.item_type === 'app').map(a => a.id));
+            }
         } else if (Array.isArray(v)) {
             // An event is about its game, or about the demo it announces.
             const pruned = keep(v, x => !!x && (dropped(String(x.appid)) || (!!x.demo_appid && dropped(String(x.demo_appid)))));
@@ -402,6 +410,7 @@
             // The keys run alongside the ids; keep them in step, and only when they were in step.
             if (Array.isArray(v.store_item_keys) && v.store_item_keys.length === before && v.appids.length < before)
                 v.store_item_keys = v.store_item_keys.filter(k => !(/^app_\d+$/.test(k) && dropped(k.slice(4))));
+            noteUpcoming(v.appids);
         }
         return changed;
     }
@@ -473,6 +482,7 @@
             const appid = k => { const id = pbFields(k.body).find(x => x.f === 1 && x.w === 0); return id ? pbVarint(k.body, pbVarint(k.body, id.start)[1])[0] : null; };
             const items = kids.filter(k => k.f === 2 && k.w === 2);
             const gone = new Set(items.filter(k => { const id = appid(k); return id !== null && dropped(String(id)); }));
+            noteUpcoming(items.filter(k => !gone.has(k)).map(appid).filter(id => id !== null));
             if (!gone.size || gone.size === items.length) return whole;   // never empty a row
             changed = true;
             const inner = pbJoin(kids.filter(k => !gone.has(k)).map(k => row.body.subarray(k.start, k.end)));
@@ -638,6 +648,7 @@
         // answering are the ones under the reader's eyes now, not row 12 from ten screens ago.
         const next = queue.pop();
         if (next) next();
+        else prefetchSoon(50);                               // the screen is served: look ahead
     };
     function dropQueued() {                                  // nothing waiting held a slot
         epoch++;
@@ -791,6 +802,39 @@
         if (TITLES.some(t => html.includes(t))) return true;
         const at = html.indexOf('id="game_area_content_descriptors"');
         return TITLE_RE.test(at > -1 ? html.slice(at, at + 20000) : html);
+    }
+
+    /* ---------------- checking ahead ---------------- */
+    // A carousel is built from its list before we know which of its games disclose AI, so in the
+    // filtering modes an AI game would show until its slide was drawn and checked. The games the
+    // carousels are about to show are checked ahead instead — the first few of every list, taken
+    // in turn, so every carousel's next pages are covered before any one list runs deep. Only when
+    // nothing on screen is waiting, never while Steam is throttling, and within a budget per page:
+    // each check reads a whole store page. Results are cached, so a later visit costs next to
+    // nothing, and the lists are pruned before Steam reads them.
+    const PREFETCH_DEPTH = 12, PREFETCH_MAX = 80;
+    function prefetchSoon(ms = 400) {
+        if (prefetchReady && !prefetchTimer) prefetchTimer = setTimeout(() => { prefetchTimer = 0; pumpPrefetch(); }, ms);
+    }
+    function nextUpcoming() {
+        for (let d = 0; d < PREFETCH_DEPTH; d++) {
+            for (const list of upcomingLists) {
+                const id = list[d];
+                if (id === undefined || prefetchSeen.has(id)) continue;
+                prefetchSeen.add(id);
+                if (validId(id) && !cacheGet(id) && !inflight.has(id)) return id;
+            }
+        }
+        return null;
+    }
+    function pumpPrefetch() {
+        while (filtering() && !document.hidden && prefetched < PREFETCH_MAX && active < MAX_CONCURRENT
+               && !queue.length && Date.now() >= pauseUntil) {
+            const id = nextUpcoming();
+            if (!id) return;
+            prefetched++;
+            lookup(id).then(d => { if (d && d.ai) packSoon(); prefetchSoon(50); });
+        }
     }
 
     const inflight = new Map();
@@ -1297,22 +1341,24 @@
                 for (const r of recs) {
                     if (r.target === tray) { touched = true; if (r.attributeName === 'style') moved = true; }
                     else if (r.type === 'attributes' && r.target.parentElement === tray) { remark(r.target); touched = true; }
+                    else if (r.type === 'childList' && [...r.addedNodes].some(n => n.nodeType === 1 && (n.matches('a[href*="/app/"]') || n.querySelector('a[href*="/app/"]')))) touched = true;   // a slide drawn
                 }
                 if (touched) packCarousel(tray, moved);         // not for every change deep inside a card
             }).observe(tray, { attributes: true, attributeFilter: ['style', 'class'], childList: true, subtree: true });
         }
         // A slide is gone when it is hidden itself, or when all that was in it is hidden.
+        // A slide is gone when it is hidden itself, or when every game in it is hidden — marked,
+        // or already known (the list, the cache) the moment Steam draws it, before it is painted.
         const gone = SLIDES_GONE();
         const isGone = s => {
-            if (!gone) return false;
-            if (s.matches(gone)) return true;
-            if (!s.querySelector(gone)) return false;
-            return ![...s.querySelectorAll('a[href*="/app/"]')].some(a => !a.closest(gone));
+            if (gone && s.matches(gone)) return true;
+            const links = [...s.querySelectorAll('a[href*="/app/"]')];
+            return !!links.length && links.every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
         };
         let M = 0, before = 0;
         slides.forEach((s, k) => {
             const g = isGone(s);
-            s.classList.toggle('sgai_slide_gone', g && !s.matches(gone));
+            s.classList.toggle('sgai_slide_gone', g && !(gone && s.matches(gone)));
             if (!g) { M++; if (k < i) before++; }
         });
         if (M === N) {                                        // nothing gone: Steam's own layout
@@ -1947,6 +1993,7 @@
             ensureFollow,
             onNavigate,      // in case the history hook never fired: some sandboxes patch a copy
             readAppPage,     // still waiting on a pushState arrival
+            packSoon,        // a carousel that just arrived gets watched from its first slides on
         ]) {
             try { step(); } catch (e) { console.warn('[SteamGameAI] sweep step failed:', step.name, e); }
         }
@@ -2366,6 +2413,9 @@
         readAppPage();
         ensureEye();
         ensureFollow();
+        packSoon();
+        prefetchReady = true;                                // what is on screen gets looked up first
+        prefetchSoon(2000);
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
     else start();
