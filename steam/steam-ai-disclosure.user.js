@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.35
+// @version      2.36
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -1225,7 +1225,11 @@
     // Spaced first; the plain read still catches a name split by an inline tag ("Half-<b>Life</b>").
     const textOnly = el => el.textContent;
     const namedIn = (n, t, want) => namesGame(addedText(n, t), want) || namesGame(addedText(n, t, textOnly), want);
-    const headingOutside = (n, t) => [...n.querySelectorAll('h1,h2,h3,h4,h5,h6')].some(h => !t.contains(h));
+    // A heading beside the card is a section's — unless it is the game's name, exactly: then it is
+    // the card's own title, set above the capsule rather than inside it. ("Half-Life Franchise"
+    // names the game too, and is a section.)
+    const headingOutside = (n, t, want) => [...n.querySelectorAll('h1,h2,h3,h4,h5,h6')]
+        .some(h => !t.contains(h) && !(want && want.includes(norm(h.textContent))));
     // Last-resort backstop: nothing that fills the screen is one game's card.
     function pageSized(n) {
         const r = n.getBoundingClientRect();
@@ -1262,7 +1266,7 @@
         let named = namesGame(norm(spacedText(t)), want) || namesGame(norm(t.textContent), want), scoped = false;
         for (let n = t.parentElement, i = 0; n && i < 8 && !n.matches(HIDE_STOP); n = n.parentElement, i++) {
             if (foreignApp(n, id)) break;
-            if (headingOutside(n, t)) break;
+            if (headingOutside(n, t, want)) break;
             if (pageSized(n)) break;
             if (appScoped(n, id)) { t = n; scoped = true; continue; }
             if (scoped) break;                               // past that container: page furniture
@@ -1288,13 +1292,19 @@
         return new RegExp(`(^|[-_])app[-_]?(ctn|card|capsule|container)?[-_]?${id}($|[-_])`, 'i').test(n.id || '');
     }
 
+    // A card's reason line — "Since you wish for <game>", "Because you played <game>" — links
+    // other games without being about them, so those links neither end the card nor say which
+    // game it is. A line of text, that is — short: a tall box of that name is a card itself.
+    const REASON = '.home_content_reason, [class*="reason" i]';
+    const aside = l => { const r = l.closest(REASON); return !!r && r.getBoundingClientRect().height < 60; };
+
     // Does this container reference any app other than `id`?
     function foreignApp(n, id) {
         const own = (n.getAttribute('data-ds-appid') || '').trim();
         if (own && own !== id) return true;
         for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
             const lid = appIdOf(l);
-            if (lid && lid !== id) return true;
+            if (lid && lid !== id && !aside(l)) return true;
         }
         return false;
     }
@@ -1391,7 +1401,7 @@
     // already known (the list, the cache) the moment Steam draws it, before it is painted.
     function allGone(s, gone) {
         if (gone && s.matches(gone)) return true;
-        const links = [...s.querySelectorAll('a[href*="/app/"]')];
+        const links = [...s.querySelectorAll('a[href*="/app/"]')].filter(a => !aside(a));
         if (s.matches('a[href*="/app/"]')) links.push(s);
         return !!links.length && links.every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
     }
@@ -1509,7 +1519,7 @@
             const kids = [...row.children];
             const cards = kids.filter(k => k.querySelector('a[href*="/app/"]'));
             if (!cards.length) continue;
-            const off = c => [...c.querySelectorAll('a[href*="/app/"]')].every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
+            const off = c => [...c.querySelectorAll('a[href*="/app/"]')].filter(a => !aside(a)).every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
             let left = 0;
             for (const c of cards) {
                 const o = off(c);
@@ -1976,7 +1986,7 @@
             let id = null;
             for (const l of n.querySelectorAll('a[href*="/app/"], [data-ds-appid]')) {
                 const x = appIdOf(l);
-                if (!x || x === id) continue;
+                if (!x || x === id || aside(l)) continue;
                 if (id) return null;                         // two games: so is everything above
                 id = x;
             }
