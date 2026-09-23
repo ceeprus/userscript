@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.28
+// @version      2.29
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -245,7 +245,7 @@
             right:calc((1 - (var(--sgai-i) + var(--sgai-t)) / var(--sgai-m)) * 100%) !important;}
         .sgai_packed [data-sgai-zone="prev"]{width:calc((var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m) * 100%) !important;}
         .sgai_packed [data-sgai-zone="next"]{width:calc((1 - (var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m)) * 100%) !important;}
-        .sgai_pack_start .carousel__back-button,.sgai_pack_end .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
+        .sgai_pack_none .carousel__back-button,.sgai_pack_none .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
     `;
 
     // A page can ship a Content-Security-Policy that refuses an injected <style> — style-src
@@ -1265,7 +1265,8 @@
     // pure-react-carousel draws the strip `N / V` wide and moves it by `-i / N`; the thumb runs
     // `i / N` to `(i + V) / N`. Its index `i` keeps counting every slide, so the window shows the
     // i'th slide still left (never past the last full page), and a click that only stepped over
-    // hidden slides is passed on, so no click is ever spent on nothing.
+    // hidden slides is passed on, so no click is ever spent on nothing. Steam's carousels wrap
+    // around at both ends; so does this one.
     const SLIDES_GONE = () => (OWN === 'hide' ? '.sgai_own' : '') + (OWN === 'hide' && MODE === 'hide' ? ',' : '') + (MODE === 'hide' ? '.sgai_ai' : '');
     const packWatch = new WeakSet();
     let packFrame = 0;
@@ -1286,6 +1287,20 @@
         if (!N || !(W > 0)) return;
         const V = Math.max(1, Math.round(N * 100 / W));
         const i = X ? Math.max(0, Math.round(-parseFloat(X[1]) / 100 * N)) : 0;
+        if (!packWatch.has(tray)) {
+            packWatch.add(tray);
+            // React moves the strip by rewriting its style, adds slides as they load, and rewrites
+            // every slide's class list as the page turns — which takes our hide marks with it. Put
+            // them back here, before the frame is painted, so a hidden game never flashes back.
+            new MutationObserver(recs => {
+                let moved = false, touched = false;
+                for (const r of recs) {
+                    if (r.target === tray) { touched = true; if (r.attributeName === 'style') moved = true; }
+                    else if (r.type === 'attributes' && r.target.parentElement === tray) { remark(r.target); touched = true; }
+                }
+                if (touched) packCarousel(tray, moved);         // not for every change deep inside a card
+            }).observe(tray, { attributes: true, attributeFilter: ['style', 'class'], childList: true, subtree: true });
+        }
         // A slide is gone when it is hidden itself, or when all that was in it is hidden.
         const gone = SLIDES_GONE();
         const isGone = s => {
@@ -1300,13 +1315,11 @@
             s.classList.toggle('sgai_slide_gone', g && !s.matches(gone));
             if (!g) { M++; if (k < i) before++; }
         });
-        if (!packWatch.has(tray)) {
-            packWatch.add(tray);
-            // React moves the strip by rewriting its style: follow it, and add slides as they load.
-            new MutationObserver(() => packCarousel(tray, true)).observe(tray, { attributes: true, attributeFilter: ['style'], childList: true });
-        }
         if (M === N) {                                        // nothing gone: Steam's own layout
-            if (root.classList.contains('sgai_packed')) root.classList.remove('sgai_packed', 'sgai_pack_start', 'sgai_pack_end');
+            if (root.classList.contains('sgai_packed')) {
+                root.classList.remove('sgai_packed', 'sgai_pack_none');
+                delete root.dataset.sgaiAt; delete root.dataset.sgaiI;
+            }
             return;
         }
         const last = Math.max(0, M - V);
@@ -1320,22 +1333,31 @@
             else if (st.width.endsWith('%') && el.querySelector('.carousel__back-button')) el.dataset.sgaiZone = 'prev';
             else if (st.width.endsWith('%') && el.querySelector('.carousel__next-button')) el.dataset.sgaiZone = 'next';
         }
-        const was = root.dataset.sgaiAt;
+        const was = root.dataset.sgaiAt, wasI = root.dataset.sgaiI;
         root.classList.add('sgai_packed');
-        root.classList.toggle('sgai_pack_start', at === 0);
-        root.classList.toggle('sgai_pack_end', at >= last);
+        root.classList.toggle('sgai_pack_none', M <= V);      // it all fits: nothing to turn
         const put = (k, v) => { if (root.style.getPropertyValue(k) !== String(v)) root.style.setProperty(k, String(v)); };
         put('--sgai-m', M); put('--sgai-v', V); put('--sgai-t', Math.min(V, M)); put('--sgai-i', at);
-        // Steam stepped, but only over hidden slides: nothing moved on screen. Step again.
-        if (stepped && was !== undefined && String(at) === was && root.dataset.sgaiI !== undefined) {
-            const dir = Math.sign(i - +root.dataset.sgaiI);
-            const btn = dir > 0 && at < last ? root.querySelector('.carousel__next-button')
-                      : dir < 0 && at > 0 ? root.querySelector('.carousel__back-button') : null;
-            root.dataset.sgaiI = i;
-            if (btn) { btn.click(); return; }
-        }
         root.dataset.sgaiI = i;
+        // Steam turned the page, but only over hidden slides — or, at an end, only to where our
+        // last page already is: nothing moved on screen. Turn it again, the same way. Steam's
+        // carousels wrap around, so a jump of more than half the strip is a step the other way,
+        // and "next" on our last page ends up, as it should, back at the first.
+        if (stepped && was !== undefined && wasI !== undefined && String(at) === was && M > V) {
+            const d = i - +wasI, dir = Math.abs(d) > N / 2 ? -Math.sign(d) : Math.sign(d);
+            const hops = +(root.dataset.sgaiHops || 0);
+            const btn = dir && hops < N ? root.querySelector(dir > 0 ? '.carousel__next-button' : '.carousel__back-button') : null;
+            if (btn) { root.dataset.sgaiHops = hops + 1; btn.click(); return; }
+        }
+        root.dataset.sgaiHops = 0;
         root.dataset.sgaiAt = at;
+    }
+    // Our hide marks on a slide React has just rewritten the class list of. Only when missing:
+    // adding a class that is already there still counts as a change to the observer above.
+    function remark(slide) {
+        const mark = cls => { if (!slide.classList.contains(cls)) slide.classList.add(cls); };
+        if (filtering() && managed.some(m => m.target === slide)) mark('sgai_ai');
+        if (ownMarks.some(m => m.target === slide && m.id in hidden)) mark('sgai_own');
     }
 
     /* ---------------- games you hid yourself ---------------- */
