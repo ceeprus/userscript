@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.24
+// @version      6.25
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
-// @description  Hides watched videos, Shorts, Mixes, and subscribed channels from your YouTube feeds.
+// @description  Hides watched videos, Shorts, Mixes, playlists, and subscribed channels from your YouTube feeds.
 // @author       Ev Haus
 // @author       netjeff
 // @author       actionless
@@ -30,6 +30,8 @@
 
 const REGEX_CHANNEL = /.*\/(user|channel|c)\/.+\/videos/u;
 const REGEX_USER = /.*\/@.*/u;
+const REGEX_PLAYLIST_LISTING_PATH =
+	/^\/feed\/(?:library|you)\/?$|\/(?:playlists|podcasts|courses|releases)\/?$/u;
 
 // Subscription-list scraping patterns (see loadSubs and friends)
 const REGEX_DATASYNC_ID = /"DATASYNC_ID":"([^"|]+)/;
@@ -243,7 +245,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 			icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>',
 			iconHidden:
 				'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/><path fill="none" stroke="currentColor" stroke-width="2.4" d="M3 21 21 3"/></svg>',
-			name: 'Toggle Mixes',
+			name: 'Toggle Mixes & Playlists',
 			stateKey: 'YTHWV_STATE_MIXES',
 			type: 'toggle',
 		},
@@ -289,6 +291,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				'.ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment',
 				// 2025-02-01 Update
 				'.ytThumbnailOverlayProgressBarHostWatchedProgressBarSegmentModern',
+				// Search results (2026-09 update)
+				'.ytwThumbnailOverlayResumePlaybackRendererThumbnailOverlayResumePlaybackProgress',
 			].join(','),
 		);
 
@@ -338,10 +342,15 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 			document.querySelectorAll('ytm-shorts-lockup-view-model-v2'),
 		].reduce((acc, matches) => {
 			matches?.forEach((child) => {
-				const container =
+				const shelf =
 					child.closest('ytd-reel-shelf-renderer') ||
 					child.closest('ytd-rich-shelf-renderer') ||
 					child.closest('grid-shelf-view-model');
+				// On the home grid a shelf sits inside a full-width
+				// ytd-rich-section-renderer. Hiding only the shelf leaves that
+				// empty wrapper in the flex-wrap grid as a forced line break,
+				// cutting the video rows around it short.
+				const container = shelf?.closest('ytd-rich-section-renderer') || shelf;
 				if (container && !acc.includes(container)) acc.push(container);
 			});
 			return acc;
@@ -367,21 +376,35 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 	const findMixesContainers = () => {
 		const mixesContainers = [];
 
+		// Library and channel playlist tabs are lists of playlists -- hiding
+		// them there would empty the page.
+		if (location.pathname.match(REGEX_PLAYLIST_LISTING_PATH)) {
+			return mixesContainers;
+		}
+
 		document
-			.querySelectorAll('a[href*="start_radio=1"], a[href*="list=RD"]')
-			.forEach((link) => {
+			.querySelectorAll(
+				[
+					'a[href*="start_radio=1"]',
+					'a[href*="list=RD"]',
+					// Stacked thumbnail of any collection lockup: mixes and
+					// regular playlists (list=PL...) alike (2026-09 update)
+					'yt-collection-thumbnail-view-model',
+				].join(','),
+			)
+			.forEach((el) => {
 				const container =
 					// Home / Subscriptions grid cell
-					link.closest('ytd-rich-item-renderer') ||
-					link.closest('ytd-grid-video-renderer') ||
+					el.closest('ytd-rich-item-renderer') ||
+					el.closest('ytd-grid-video-renderer') ||
 					// Search results (legacy + lockup)
-					link.closest('ytd-radio-renderer') ||
-					link.closest('ytd-video-renderer') ||
+					el.closest('ytd-radio-renderer') ||
+					el.closest('ytd-video-renderer') ||
 					// Watch page right-hand sidebar
-					link.closest('ytd-compact-radio-renderer') ||
-					link.closest('ytd-compact-video-renderer') ||
+					el.closest('ytd-compact-radio-renderer') ||
+					el.closest('ytd-compact-video-renderer') ||
 					// New unified lockup (search + sidebar, 2024+)
-					link.closest('yt-lockup-view-model');
+					el.closest('yt-lockup-view-model');
 
 				if (!container) return;
 
@@ -456,60 +479,69 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				// "Subscription" section needs us to hide the "#contents",
 				// but in the "Trending" section, that class will hide everything.
 				// So there, we need to hide the "ytd-video-renderer"
-				if (section === 'subscriptions') {
-					// For rows, hide the row and the header too. We can't hide
-					// their entire parent because then we'll get the infinite
-					// page loader to load forever.
-					watchedItem =
-						// Grid item
-						item.closest('.ytd-grid-renderer') ||
-						item.closest('.ytd-item-section-renderer') ||
-						item.closest('.ytd-rich-grid-row') ||
-						item.closest('.ytd-rich-grid-renderer') ||
-						// List item
-						item.closest('#grid-container');
+				switch (section) {
+					case 'subscriptions': {
+						// For rows, hide the row and the header too. We can't hide
+						// their entire parent because then we'll get the infinite
+						// page loader to load forever.
+						watchedItem =
+							// Grid item
+							item.closest('.ytd-grid-renderer') ||
+							item.closest('.ytd-item-section-renderer') ||
+							item.closest('.ytd-rich-grid-row') ||
+							item.closest('.ytd-rich-grid-renderer') ||
+							// List item
+							item.closest('#grid-container');
 
-					// If we're hiding the .ytd-item-section-renderer element, we need to give it
-					// some extra spacing otherwise we'll get stuck in infinite page loading
-					if (watchedItem?.classList.contains('ytd-item-section-renderer')) {
-						watchedItem
-							.closest('ytd-item-section-renderer')
-							.classList.add('YT-HWV-HIDDEN-ROW-PARENT');
+						// If we're hiding the .ytd-item-section-renderer element, we need to give it
+						// some extra spacing otherwise we'll get stuck in infinite page loading
+						if (watchedItem?.classList.contains('ytd-item-section-renderer')) {
+							watchedItem
+								.closest('ytd-item-section-renderer')
+								.classList.add('YT-HWV-HIDDEN-ROW-PARENT');
+						}
+						break;
 					}
-				} else if (section === 'playlist') {
-					watchedItem =
-						item.closest('ytd-playlist-video-renderer') ||
-						item.closest('yt-lockup-view-model');
-				} else if (section === 'watch') {
-					watchedItem =
-						item.closest('ytd-compact-video-renderer') ||
-						// Recommended videos on the right-hand sidebar when watching a video (#370)
-						item.closest('yt-lockup-view-model');
+					case 'playlist': {
+						watchedItem =
+							item.closest('ytd-playlist-video-renderer') ||
+							item.closest('yt-lockup-view-model');
+						break;
+					}
+					case 'watch': {
+						watchedItem =
+							item.closest('ytd-compact-video-renderer') ||
+							// Recommended videos on the right-hand sidebar when watching a video (#370)
+							item.closest('yt-lockup-view-model');
 
-					// Don't hide video if it's going to play next.
-					//
-					// If there is no watchedItem - we probably got
-					// `ytd-playlist-panel-video-renderer`:
-					// let's also ignore it as in case of shuffle enabled
-					// we could accidentially hide the item which gonna play next.
-					if (watchedItem?.closest('ytd-compact-autoplay-renderer')) {
-						watchedItem = null;
-					}
+						// Don't hide video if it's going to play next.
+						//
+						// If there is no watchedItem - we probably got
+						// `ytd-playlist-panel-video-renderer`:
+						// let's also ignore it as in case of shuffle enabled
+						// we could accidentially hide the item which gonna play next.
+						if (watchedItem?.closest('ytd-compact-autoplay-renderer')) {
+							watchedItem = null;
+						}
 
-					// For playlist items, we never hide them, but we will dim
-					// them even if current mode is to hide rather than dim.
-					const watchedItemInPlaylist = item.closest(
-						'ytd-playlist-panel-video-renderer',
-					);
-					if (!watchedItem && watchedItemInPlaylist) {
-						dimmedItem = watchedItemInPlaylist;
+						// For playlist items, we never hide them, but we will dim
+						// them even if current mode is to hide rather than dim.
+						const watchedItemInPlaylist = item.closest(
+							'ytd-playlist-panel-video-renderer',
+						);
+						if (!watchedItem && watchedItemInPlaylist) {
+							dimmedItem = watchedItemInPlaylist;
+						}
+						break;
 					}
-				} else {
-					// For home page and other areas
-					watchedItem =
-						item.closest('ytd-rich-item-renderer') ||
-						item.closest('ytd-video-renderer') ||
-						item.closest('ytd-grid-video-renderer');
+					default: {
+						// For home page and other areas
+						watchedItem =
+							item.closest('ytd-rich-item-renderer') ||
+							item.closest('ytd-video-renderer') ||
+							item.closest('ytd-grid-video-renderer') ||
+							item.closest('yt-lockup-view-model');
+					}
 				}
 
 				if (watchedItem) {
