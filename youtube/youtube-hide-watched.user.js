@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.25
+// @version      6.26
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, and subscribed channels from your YouTube feeds.
@@ -83,6 +83,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 					await loadSubs(true);
 				}
 				await updateClassOnSubscribedItems();
+				updateClassOnPlayablesShelves();
+				reflowRichGrids();
 			},
 		},
 		fields: {
@@ -92,6 +94,11 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				max: 100,
 				min: 0,
 				type: 'int',
+			},
+			HIDE_PLAYABLES: {
+				default: true,
+				label: 'Hide the YouTube Playables (games) shelf',
+				type: 'checkbox',
 			},
 			SUBBED_DIM_BRIGHTNESS: {
 				default: 45,
@@ -179,6 +186,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 .YT-HWV-MIXES-HIDDEN { display: none !important }
 
 .YT-HWV-MIXES-DIMMED { opacity: 0.3 }
+
+.YT-HWV-PLAYABLES-HIDDEN { display: none !important }
 
 .YT-HWV-SUBBED-HIDDEN { display: none !important }
 
@@ -940,6 +949,91 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 
 	// ===========================================================
 
+	const updateClassOnPlayablesShelves = () => {
+		try {
+			document.querySelectorAll('.YT-HWV-PLAYABLES-HIDDEN').forEach((el) => {
+				el.classList.remove('YT-HWV-PLAYABLES-HIDDEN');
+			});
+
+			if (!gmc.get('HIDE_PLAYABLES')) return;
+
+			document
+				.querySelectorAll(
+					'ytd-mini-game-card-view-model, a[href^="/playables"]',
+				)
+				.forEach((el) => {
+					el.closest('ytd-rich-section-renderer')?.classList.add(
+						'YT-HWV-PLAYABLES-HIDDEN',
+					);
+				});
+		} catch (error) {
+			console.error('[YT-HWV]', error);
+		}
+	};
+
+	// ===========================================================
+	// The home grid is one flex-wrap list, and each full-width section in
+	// it (Playables, "Explore more topics", news...) forces a line break,
+	// so hiding videos ahead of a section leaves a short row above it.
+	// Push such sections down with CSS `order` until the row before them
+	// is full. Orders are negative so tiles YouTube appends later (order 0)
+	// still land after everything already placed.
+
+	const isShown = (el) =>
+		el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null;
+
+	const reflowRichGrids = () => {
+		try {
+			for (const contents of document.querySelectorAll(
+				'ytd-rich-grid-renderer > #contents',
+			)) {
+				const perRow =
+					Number.parseInt(
+						getComputedStyle(contents.parentElement).getPropertyValue(
+							'--ytd-rich-grid-items-per-row',
+						),
+						10,
+					) || 1;
+				const placed = [];
+				let pending = [];
+				let column = 0;
+				let deferred = false;
+
+				for (const el of contents.children) {
+					if (el.tagName === 'YTD-CONTINUATION-ITEM-RENDERER') continue;
+					if (!isShown(el)) {
+						placed.push(el);
+					} else if (el.tagName === 'YTD-RICH-ITEM-RENDERER') {
+						placed.push(el);
+						column = (column + 1) % perRow;
+						if (column === 0) {
+							placed.push(...pending);
+							pending = [];
+						}
+					} else if (column === 0) {
+						placed.push(el);
+					} else {
+						pending.push(el);
+						deferred = true;
+					}
+				}
+				placed.push(...pending);
+
+				placed.forEach((el, i) => {
+					if (deferred) {
+						el.style.order = String(i - placed.length);
+					} else {
+						el.style.removeProperty('order');
+					}
+				});
+			}
+		} catch (error) {
+			console.error('[YT-HWV]', error);
+		}
+	};
+
+	// ===========================================================
+
 	const renderButtons = async () => {
 		// Find button area target
 		const target = findButtonAreaTarget();
@@ -996,6 +1090,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 						await updateClassOnShortsItems();
 						await updateClassOnMixesItems();
 						await updateClassOnSubscribedItems();
+						updateClassOnPlayablesShelves();
+						reflowRichGrids();
 						await renderButtons();
 					});
 					break;
@@ -1036,6 +1132,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 		await updateClassOnShortsItems();
 		await updateClassOnMixesItems();
 		await updateClassOnSubscribedItems();
+		updateClassOnPlayablesShelves();
+		reflowRichGrids();
 		await renderButtons();
 	}, 250);
 
@@ -1088,6 +1186,10 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 	// to date, we have to listen for ANY DOM change event, and
 	// re-run our script.
 	observeDOM(document.body, run);
+
+	// Resizing changes how many tiles fit per row without touching the
+	// DOM, so the observer above never sees it.
+	window.addEventListener('resize', () => run());
 
 	run();
 })();
