@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.38
+// @version      2.39
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -1443,9 +1443,10 @@
         if (!items.length) return;
         const dots = [...(box.querySelector('.carousel_thumbs')?.children || [])];
         const paired = dots.length === items.length;
+        const paged = reflowPages(box, items, gone);
         let left = 0;
         items.forEach((it, k) => {
-            const g = allGone(it, gone);
+            const g = allGone(it, gone) || (paged && !it.children.length);
             it.classList.toggle('sgai_slide_gone', g && !(gone && it.matches(gone)));
             if (paired) dots[k].classList.toggle('sgai_slide_gone', g);
             if (!g) left++;
@@ -1458,6 +1459,33 @@
         const shown = items.find(it => it.classList.contains('focus'));
         const next = box.querySelector('.arrow.right');
         if (left && shown && allGone(shown, gone) && next && next.getClientRects().length) next.click();
+    }
+
+    // A paged capsule row — the front page's "Under $10", its tag rows — has one dot per page of
+    // several games, and a game gone from a page would leave a hole in it. So the games move up:
+    // each page takes the next ones still shown, in Steam's order, and a page left with none goes
+    // with its dot. When a game comes back, the order is put back. Only rows whose pages hold
+    // nothing but capsules: the spotlight's columns are laid out by hand.
+    function reflowPages(box, items, gone) {
+        if (items.length < 2 || !items.every(it => !it.matches('a') && [...it.children].every(c => c.matches('a[href]')))) return false;
+        if (!box.dataset.sgaiPer) {                          // Steam's own layout, read once, before we move anything
+            const per = Math.max(...items.map(it => it.children.length));
+            if (per < 2) return false;
+            box.dataset.sgaiPer = per;
+            let k = 0;
+            for (const it of items) for (const c of it.children) c.dataset.sgaiOrd = k++;
+        }
+        const per = +box.dataset.sgaiPer, ord = c => (c.dataset.sgaiOrd === undefined ? 1e9 : +c.dataset.sgaiOrd);
+        const caps = items.flatMap(it => [...it.children]).sort((a, b) => ord(a) - ord(b));
+        const shown = caps.filter(c => !allGone(c, gone)), off = caps.filter(c => allGone(c, gone));
+        items.forEach((it, k) => {
+            // The gone ones wait, out of sight, on the last page. A game that leaves this page for
+            // a later one is taken out when that page is filled.
+            const want = shown.slice(k * per, k * per + per).concat(k === items.length - 1 ? off : []);
+            const have = [...it.children];
+            if (want.length !== have.length || want.some((c, i) => c !== have[i])) it.append(...want);
+        });
+        return true;
     }
 
     function packCarousel(tray, stepped) {
@@ -1954,7 +1982,16 @@
             return { left: s.left - size - BTN_GAP, top: s.top + (s.height - size) / 2, size };
         }
         const r = el.getBoundingClientRect();
-        return { left: r.right - BTN_PX - 4, top: r.top + 4, size: BTN_PX };
+        const spot = { left: r.right - BTN_PX - 4, top: r.top + 4, size: BTN_PX };
+        // Signed in, Steam puts its own "…" menu button in that same corner of a capsule. Sit
+        // just left of it, as beside the wishlist star, rather than on top of it.
+        const more = onScreen(el.querySelector('.ds_options > div'));
+        if (more) {
+            const m = more.getBoundingClientRect();
+            if (m.left < spot.left + BTN_PX && m.right > spot.left && m.top < spot.top + BTN_PX && m.bottom > spot.top)
+                return { left: m.left - BTN_PX - BTN_GAP, top: m.top + (m.height - BTN_PX) / 2, size: BTN_PX };
+        }
+        return spot;
     }
 
     function syncHoverButton() {
