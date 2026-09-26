@@ -10,7 +10,7 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | Download | Description |
 | --- | --- |
 | [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds an panel to X/Twitter profiles to hide multiple post types. |
-| [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, playlists, and subscribed channels from your YouTube feeds. |
+| [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds. |
 | [Steam Inventory Augmentor](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-inventory-augmentor.user.js) | Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools. |
 | [Steam: AI Content Disclosure Badge](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js) | Flags Steam games with an AI content disclosure, and badges, blurs or hides them with one click on the eye in Steam's header. You can also hide any other game you want, and share your hidden list. |
 | [Steam Curator: Import Review Link from Backloggd](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/backloggd-review-import.user.js) | Adds a searchable "Import from Backloggd" box next to the "URL for full review" field on Steam Curator review-edit pages. |

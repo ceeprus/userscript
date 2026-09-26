@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.26
+// @version      6.27
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
-// @description  Hides watched videos, Shorts, Mixes, playlists, and subscribed channels from your YouTube feeds.
+// @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
 // @author       Ev Haus
 // @author       netjeff
 // @author       actionless
@@ -187,6 +187,10 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 
 .YT-HWV-MIXES-DIMMED { opacity: 0.3 }
 
+.YT-HWV-MEMBERS-HIDDEN { display: none !important }
+
+.YT-HWV-MEMBERS-DIMMED { opacity: 0.3 }
+
 .YT-HWV-PLAYABLES-HIDDEN { display: none !important }
 
 .YT-HWV-SUBBED-HIDDEN { display: none !important }
@@ -256,6 +260,14 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/><path fill="none" stroke="currentColor" stroke-width="2.4" d="M3 21 21 3"/></svg>',
 			name: 'Toggle Mixes & Playlists',
 			stateKey: 'YTHWV_STATE_MIXES',
+			type: 'toggle',
+		},
+		{
+			icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-1.11 0-2 .89-2 2v11c0 1.11.89 2 2 2h4v5l4-2 4 2v-5h4c1.11 0 2-.89 2-2V4c0-1.11-.89-2-2-2zm0 13H4v-2h16v2zm0-5H4V4h16v6z"/></svg>',
+			iconHidden:
+				'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-1.11 0-2 .89-2 2v11c0 1.11.89 2 2 2h4v5l4-2 4 2v-5h4c1.11 0 2-.89 2-2V4c0-1.11-.89-2-2-2zm0 13H4v-2h16v2zm0-5H4V4h16v6z"/><path fill="none" stroke="currentColor" stroke-width="2.4" d="M3 21 21 3"/></svg>',
+			name: 'Toggle Members-only Videos',
+			stateKey: 'YTHWV_STATE_MEMBERS',
 			type: 'toggle',
 		},
 		{
@@ -428,6 +440,47 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 		logDebug(`Found ${mixesContainers.length} mixes container elements`);
 
 		return mixesContainers;
+	};
+
+	// ===========================================================
+
+	const findMembersContainers = () => {
+		const membersContainers = [];
+
+		document
+			.querySelectorAll(
+				[
+					// "Members only" badge in a lockup's metadata (2026-09 update).
+					// The channel header's "Join" price promo uses the same commerce
+					// badge style, so only badges inside video metadata count.
+					'yt-content-metadata-view-model badge-shape.ytBadgeShapeCommerce',
+					// Legacy renderers
+					'.badge-style-type-members-only',
+				].join(','),
+			)
+			.forEach((badge) => {
+				const container =
+					badge.closest('ytd-rich-item-renderer') ||
+					badge.closest('ytd-grid-video-renderer') ||
+					badge.closest('ytd-video-renderer') ||
+					badge.closest('ytd-compact-video-renderer') ||
+					badge.closest('yt-lockup-view-model');
+
+				if (!container) return;
+
+				// Never hide the item that's queued to play next.
+				if (container.closest('ytd-compact-autoplay-renderer')) return;
+
+				if (!membersContainers.includes(container)) {
+					membersContainers.push(container);
+				}
+			});
+
+		logDebug(
+			`Found ${membersContainers.length} members-only container elements`,
+		);
+
+		return membersContainers;
 	};
 
 	// ===========================================================
@@ -624,6 +677,36 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 					item.classList.add('YT-HWV-MIXES-DIMMED');
 				} else if (state === 'hidden') {
 					item.classList.add('YT-HWV-MIXES-HIDDEN');
+				}
+			});
+		} catch (error) {
+			console.error('[YT-HWV]', error);
+		}
+	};
+
+	// ===========================================================
+
+	const updateClassOnMembersItems = async () => {
+		try {
+			const section = determineYoutubeSection();
+
+			document.querySelectorAll('.YT-HWV-MEMBERS-DIMMED').forEach((el) => {
+				el.classList.remove('YT-HWV-MEMBERS-DIMMED');
+			});
+			document.querySelectorAll('.YT-HWV-MEMBERS-HIDDEN').forEach((el) => {
+				el.classList.remove('YT-HWV-MEMBERS-HIDDEN');
+			});
+
+			const state = await stateGet(`YTHWV_STATE_MEMBERS_${section}`);
+
+			const membersContainers = findMembersContainers();
+
+			membersContainers.forEach((item) => {
+				// Add current class
+				if (state === 'dimmed') {
+					item.classList.add('YT-HWV-MEMBERS-DIMMED');
+				} else if (state === 'hidden') {
+					item.classList.add('YT-HWV-MEMBERS-HIDDEN');
 				}
 			});
 		} catch (error) {
@@ -1089,6 +1172,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 						await updateClassOnWatchedItems();
 						await updateClassOnShortsItems();
 						await updateClassOnMixesItems();
+						await updateClassOnMembersItems();
 						await updateClassOnSubscribedItems();
 						updateClassOnPlayablesShelves();
 						reflowRichGrids();
@@ -1126,11 +1210,14 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 			return;
 		}
 
-		logDebug('Running check for watched videos, shorts, mixes, and subs');
+		logDebug(
+			'Running check for watched videos, shorts, mixes, members, and subs',
+		);
 		applySubbedTintSetting();
 		await updateClassOnWatchedItems();
 		await updateClassOnShortsItems();
 		await updateClassOnMixesItems();
+		await updateClassOnMembersItems();
 		await updateClassOnSubscribedItems();
 		updateClassOnPlayablesShelves();
 		reflowRichGrids();
