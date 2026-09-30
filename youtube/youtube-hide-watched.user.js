@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.27
+// @version      6.28
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
@@ -459,6 +459,15 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				].join(','),
 			)
 			.forEach((badge) => {
+				// "Fundraiser" shares the commerce style too, but only the
+				// members badge carries an icon (the membership card).
+				if (
+					badge.matches('badge-shape') &&
+					!badge.querySelector('.ytBadgeShapeIcon')
+				) {
+					return;
+				}
+
 				const container =
 					badge.closest('ytd-rich-item-renderer') ||
 					badge.closest('ytd-grid-video-renderer') ||
