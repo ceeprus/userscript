@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.39
+// @version      2.40
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure" — a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -114,6 +114,8 @@
     // other games, and carrying that restriction to the next page left the filter doing nothing.
     const appIdFromPath = () => (location.pathname.match(/^\/app\/(\d+)/) || [])[1] || null;
     let APP_PAGE_ID = appIdFromPath();
+    // A game's DLC list (/dlc/<id>/) shows that game's art and name in its header: the page's own.
+    const dlcPageGame = () => (location.pathname.match(/^\/dlc\/(\d+)/) || [])[1] || null;
 
     // Named in every badge tooltip, so a screenshot in a bug report says which build made it.
     const INFO = (typeof GM_info !== 'undefined' && GM_info.script) || {};
@@ -164,6 +166,9 @@
         .sgai_inline{position:static;margin-left:8px;cursor:default;}
         .sgai_desc{position:static;margin-top:8px;}
         .sgai_host{position:relative;}
+        /* An inline link around a capsule picture (an event card's game) is one line tall, the
+           picture spilling out of it: as the badge's host it wraps the picture instead. */
+        .sgai_host.sgai_host_box{display:inline-block;}
         .sgai_err{color:#8f98a0;}
         /* "Not verified" only means something while a filter is on. */
         [data-sgai-mode="badge"] .sgai_err{display:none !important;}
@@ -255,6 +260,11 @@
            custom properties on the carousel: --sgai-m slides left, --sgai-v on screen at once,
            --sgai-t the thumb's share, --sgai-i the first one showing. */
         .sgai_slide_gone,.sgai_card_gone,.sgai_row_gone,.sgai_row_packed > .sgai_spacer{display:none !important;}
+        /* Holds a hidden game's place in a short row, so Steam does not stretch the rest (see reflow). */
+        .sgai_pad{visibility:hidden !important;pointer-events:none !important;}
+        /* /explore/new/'s two big capsules share the row; with one gone the other keeps its size. */
+        .newonsteam_headercaps{justify-content:center;}
+        .newonsteam_headercaps > .newonsteam_headercap{flex-grow:0 !important;}
         /* A sale row (2 games over 3) with some hidden: the rest centred, at the width they had. */
         .sgai_row_packed{grid-template-columns:var(--sgai-cols) !important;justify-content:center !important;}
         .sgai_packed .carousel__slider-tray{width:calc(var(--sgai-m) / var(--sgai-v) * 100%) !important;
@@ -407,6 +417,8 @@
     //                                                    /saleaction/ajaxgetsaledynamicappquery)
     //   [{appid, …}, …]                                  news and demo events about games
     //                                                    (data-recent_events_…, data-demoeventstore)
+    //   [appid, …]                                       a hub's plain lists (the Remote Play hub's
+    //                                                    data-discount_categoryid…)
     // The attributes are edited as the parser inserts the element, which is before any of Steam's
     // scripts run; the downloads through a small script in the page (see repackInPage).
 
@@ -437,8 +449,10 @@
                 noteUpcoming(l.apps.filter(a => a && a.item_type === 'app').map(a => a.id));
             }
         } else if (Array.isArray(v)) {
-            // An event is about its game, or about the demo it announces.
-            const pruned = keep(v, x => !!x && (dropped(String(x.appid)) || (!!x.demo_appid && dropped(String(x.demo_appid)))));
+            // An event is about its game, or about the demo it announces; a bare number is a game.
+            const pruned = keep(v, x => typeof x === 'number' ? dropped(String(x))
+                : !!x && (dropped(String(x.appid)) || (!!x.demo_appid && dropped(String(x.demo_appid)))));
+            if (v.length && v.every(x => typeof x === 'number')) noteUpcoming(pruned);
             if (pruned !== v) { v.length = 0; v.push(...pruned); }
         } else if (v && typeof v === 'object' && Array.isArray(v.appids)) {
             const before = v.appids.length;
@@ -459,7 +473,7 @@
     };
 
     // The page's own copy: the list attributes on #application_config.
-    const LIST_ATTR = /^data-(ch_main_list_data$|section_|browser_|hubitems_|recent_events_|demoeventstore$)/;
+    const LIST_ATTR = /^data-(ch_main_list_data$|section_|browser_|hubitems_|recent_events_|demoeventstore$|discount_)/;
     function pruneConfig(el) {
         for (const a of [...el.attributes]) {
             if (!LIST_ATTR.test(a.name)) continue;
@@ -919,6 +933,14 @@
                 const { text: html, url } = await fetchAppPage(id);
                 // A login wall, the store front a delisted game redirects to, a region notice: a
                 // page, but not this game's, and caching it would call the game clean for a week.
+                // Something that is not a game — a Steam Labs experiment, Steam's hardware, the
+                // recommender — has an app id too, and its page sends the read elsewhere. That is
+                // not a game we could not check: no "not verified" badge, and not asked again.
+                if (!/\/app\/\d+/.test(url) && !/login|agecheck/i.test(url)) {
+                    const d = { ai: false, text: null, name: null, notApp: true };
+                    cacheSet(id, d);
+                    return d;
+                }
                 if (!/\/app\/\d+/.test(url) || !/appHubAppName|apphub_AppName/.test(html)) throw new Error('not an app page: ' + url);
                 if (!mayDisclose(html)) {
                     const d = { ai: false, text: null, name: rawName(html) };
@@ -967,17 +989,21 @@
         const img = imgs.find(i => /(header|capsule|hero|library_|logo)/i.test(src(i)))
                  || imgs.find(i => !/\/ss_|screenshot|movie|\.webm|broadcast/i.test(src(i)))
                  || imgs[0];
-        return (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
+        const alt = (img && img.getAttribute('alt')) || el.getAttribute('aria-label') || '';
+        return alt.replace(/['’]s screenshot \d+$/i, '');   // a hover preview's picture still names its game
     };
 
     // The appid an element itself stands for — exact, never a substring: "/app/700330" must not
     // read as app 70.
+    // A link to a game's page: its path starts /app/<id>. A news post about the game
+    // (/news/app/<id>/view/…) or its age check links "/app/" too, and is not one of its capsules.
+    const APP_HREF = /^(?:(?:https?:)?\/\/[^/]+)?\/app\/(\d+)/;
+    const hrefApp = h => ((h || '').trim().match(APP_HREF) || [])[1] || null;
     function appIdOf(el) {
         if (!el || !el.getAttribute) return null;
         const d = (el.getAttribute('data-ds-appid') || '').trim();
         if (/^\d+$/.test(d)) return d;
-        const m = (el.getAttribute('href') || '').match(/\/app\/(\d+)/);
-        return m ? m[1] : null;
+        return hrefApp(el.getAttribute('href'));
     }
     // The game a scanned node shows now. React reuses nodes — a virtualized list, a queue that
     // advances in place — so this is re-read, the same way the scanner read it the first time.
@@ -1000,12 +1026,13 @@
         const pos = getComputedStyle(el).position;
         if (pos === '') return false;
         if (pos === 'static') { el.classList.add('sgai_host'); el.dataset.sgaiHosted = '1'; }
+        if (el.dataset.sgaiHosted && getComputedStyle(el).display === 'inline' && el.querySelector('img')) el.classList.add('sgai_host_box');
         return true;
     }
     function releaseHost(el) {
         if (!el || !el.dataset || !el.dataset.sgaiHosted) return;
         if (el.querySelector(':scope > .sgai_cap')) return;   // another badge still needs it
-        el.classList.remove('sgai_host');
+        el.classList.remove('sgai_host', 'sgai_host_box');
         delete el.dataset.sgaiHosted;
     }
 
@@ -1172,7 +1199,19 @@
         m.node.classList.add('sgai_cap');
         // Steam draws its own IN LIBRARY / WISHLISTED ribbon in this corner; sit below it rather
         // than hide what the user already owns.
-        m.node.classList.toggle('sgai_under_flag', !!host.querySelector('.ds_flag'));
+        const flag = !!host.querySelector('.ds_flag');
+        m.node.classList.toggle('sgai_under_flag', flag);
+        // A React capsule draws its marks — signed in, a DLC's ribbon in this corner — in its
+        // decorators, and a game streaming now has a LIVE chip there: sit just below them.
+        let below = '';
+        const MARKS = '.CapsuleDecorators > *, .broadcast_live_stream_icon';     // a DLC's ribbon, the LIVE chip
+        if (!flag && host.querySelector(MARKS)) {
+            const h = host.getBoundingClientRect();
+            const bottoms = [...host.querySelectorAll(MARKS)].map(e => e.getBoundingClientRect())
+                .filter(r => r.height > 4 && r.left - h.left < 60 && r.top - h.top < 30).map(r => r.bottom - h.top);
+            if (bottoms.length) below = Math.round(Math.min(80, Math.max(...bottoms) + 2)) + 'px';
+        }
+        if (m.node.style.top !== below) m.node.style.top = below;
         host.appendChild(m.node);
         if (m.host && m.host !== host) releaseHost(m.host);
         m.host = host;
@@ -1193,9 +1232,11 @@
     // buttons) are card too and get absorbed — otherwise hiding leaves "-50% $4.99" behind.
     const HIDE_STOP = 'body, main, #StoreTemplate, #responsive_page_template_content, [data-featuretarget],' +
         '.responsive_page_frame, .responsive_page_content, #page_background_container, .page_content_ctn, .creator_grid_ctn,' +
-        '#tab_preview_container';                            // the front page's tabs: one preview per game, built on hover
+        '#tab_preview_container,' +                          // the front page's tabs: one preview per game, built on hover
+        '#global_hover,' +                                   // the old pages' tooltip: one box for every game, refilled on hover
+        '.VideoRow';                                         // a trailer carousel: one game at a time, between its arrows
 
-    const APP_CAROUSELS = '#recommended_block, [data-featuretarget="storeitems-carousel"], [data-featuretarget="creatorhome-carousel"]';
+    const APP_CAROUSELS = '#recommended_block, [data-featuretarget^="storeitems-carousel"], [data-featuretarget="creatorhome-carousel"]';
 
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Punctuation, ™ and emoji read as spaces: the name we stored and the name on the card are
@@ -1267,6 +1308,14 @@
 
     function hideTarget(el, kind, id, name, blind) {
         if (kind === 'title') return null;
+        // Steam's old tooltip: one box for every game, holding one #hover_app_<id> per game pointed
+        // at. That one is the game's own; the box around it is everybody's.
+        if (/^hover_app_\d+$/.test(el.id || '')) return { t: el, sure: true };
+        // A trailer carousel (a creator's "Popular Titles", the demo hub's top): the game on show is
+        // all of what sits between its two arrows — trailer, art, tags, buttons.
+        const row = el.closest('.VideoRow');
+        const mid = row && [...row.children].find(c => !c.matches('button') && c.contains(el));
+        if (mid) return { t: mid, sure: true };
         // A sale widget's description is one part of the card its capsule makes: take that card.
         // Grown from the text alone it stops at the tags below it, and half the card stays.
         if (el.matches('.StoreSaleWidgetShortDesc')) {
@@ -1352,9 +1401,10 @@
         // like this", "More from <developer>", mods); badges unaffected. The live page mounts
         // each of those into a data-featuretarget="…-carousel" div; #recommended_block is the
         // older server-rendered "More Like This". A title badge has no card either, by design.
-        if (m.kind === 'title' || (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS))) return { t: null, sure: true };
+        const kind = m.el.matches('.tab_preview') ? 'corner' : m.kind;   // the tabs' preview: its badge is a title's, the preview is the card
+        if (kind === 'title' || (APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) || m.id === dlcPageGame()) return { t: null, sure: true };
         // No name yet: React may not have drawn the card. Not sure, so heal() looks again a few times.
-        return hideTarget(m.el, m.kind, m.id, m.name) || { t: null, sure: false };
+        return hideTarget(m.el, kind, m.id, m.name) || { t: null, sure: false };
     }
 
     function markAI(m, found) {
@@ -1421,6 +1471,9 @@
         for (const box of document.querySelectorAll('.carousel_container')) {
             try { packLegacy(box, gone); } catch (e) { console.warn('[SteamGameAI] could not pack a carousel', e); }
         }
+        try { packGrids(gone); } catch (e) { console.warn('[SteamGameAI] could not pack a grid', e); }
+        try { packTrailers(gone); } catch (e) { console.warn('[SteamGameAI] could not pack a trailer carousel', e); }
+        try { packTabs(gone); } catch (e) { console.warn('[SteamGameAI] could not refocus the tabs', e); }
     }
     // A slide is gone when it is hidden itself, or when every game in it is hidden — marked, or
     // already known (the list, the cache) the moment Steam draws it, before it is painted.
@@ -1443,10 +1496,10 @@
         if (!items.length) return;
         const dots = [...(box.querySelector('.carousel_thumbs')?.children || [])];
         const paired = dots.length === items.length;
-        const paged = reflowPages(box, items, gone);
+        const paged = reflow(items, gone);
         let left = 0;
         items.forEach((it, k) => {
-            const g = allGone(it, gone) || (paged && !it.children.length);
+            const g = allGone(it, gone) || (paged && !kidsOf(it).length);
             it.classList.toggle('sgai_slide_gone', g && !(gone && it.matches(gone)));
             if (paired) dots[k].classList.toggle('sgai_slide_gone', g);
             if (!g) left++;
@@ -1461,31 +1514,155 @@
         if (left && shown && allGone(shown, gone) && next && next.getClientRects().length) next.click();
     }
 
-    // A paged capsule row — the front page's "Under $10", its tag rows — has one dot per page of
-    // several games, and a game gone from a page would leave a hole in it. So the games move up:
-    // each page takes the next ones still shown, in Steam's order, and a page left with none goes
-    // with its dot. When a game comes back, the order is put back. Only rows whose pages hold
-    // nothing but capsules: the spotlight's columns are laid out by hand.
-    function reflowPages(box, items, gone) {
-        if (items.length < 2 || !items.every(it => !it.matches('a') && [...it.children].every(c => c.matches('a[href]')))) return false;
-        if (!box.dataset.sgaiPer) {                          // Steam's own layout, read once, before we move anything
-            const per = Math.max(...items.map(it => it.children.length));
-            if (per < 2) return false;
-            box.dataset.sgaiPer = per;
-            let k = 0;
-            for (const it of items) for (const c of it.children) c.dataset.sgaiOrd = k++;
+    // Games that flow through a run of boxes — a carousel's pages ("Under $10", the tag rows, the
+    // featured deals), a sale grid's rows — in Steam's order. A game gone from a box would leave a
+    // hole in it, so the games move up: each box takes the next ones still shown, as many as it
+    // held to begin with, and the gone ones wait, out of sight, in the last box. When a game comes
+    // back, the order is put back. Only runs whose boxes hold nothing but capsules: the spotlight's
+    // columns are laid out by hand.
+    const capsuleKid = c => c.matches('a[href], [data-ds-appid]');
+    const isPad = c => c.classList.contains('sgai_pad');
+    const kidsOf = b => [...b.children].filter(c => !isPad(c));
+    // An empty, invisible copy of a capsule's box: the same tag and classes, so the same size.
+    const NOT_COPIED = /^(sgai_|app_impression_tracked$|add_microtrailer$|with_microtrailer$|focus$)/;
+    function makePad(model) {
+        const p = document.createElement(model.tagName);
+        p.className = [...model.classList].filter(c => !NOT_COPIED.test(c)).join(' ');
+        p.classList.add('sgai_pad');
+        p.setAttribute('aria-hidden', 'true');
+        return p;
+    }
+    // Steam loads a page's pictures the first time that page comes on screen: a capsule moved into
+    // a page already shown would keep its placeholder, a price and no art.
+    function loadArt(c) {
+        for (const img of c.querySelectorAll('img[data-image-url]')) {
+            const src = img.getAttribute('src') || '';
+            if (!src || /placeholder|blank|transparent|1x1/i.test(src)) img.src = img.dataset.imageUrl;
         }
-        const per = +box.dataset.sgaiPer, ord = c => (c.dataset.sgaiOrd === undefined ? 1e9 : +c.dataset.sgaiOrd);
-        const caps = items.flatMap(it => [...it.children]).sort((a, b) => ord(a) - ord(b));
+    }
+    function reflow(boxes, gone, single) {
+        if (boxes.length < (single ? 1 : 2) || !boxes.every(b => !capsuleKid(b) && kidsOf(b).every(capsuleKid))) return false;
+        // Each box's share is read the first time it is seen, before we move anything: Steam's own
+        // layout. A box Steam adds later joins the run; one it is still filling is waited for.
+        if (boxes.some(b => !b.dataset.sgaiRoom && !kidsOf(b).length)) return false;
+        let next = 1 + Math.max(-1, ...boxes.flatMap(kidsOf).map(c => (c.dataset.sgaiOrd === undefined ? -1 : +c.dataset.sgaiOrd)));
+        for (const b of boxes) {
+            if (b.dataset.sgaiRoom) continue;
+            b.dataset.sgaiRoom = kidsOf(b).length;
+            for (const c of kidsOf(b)) if (c.dataset.sgaiOrd === undefined) c.dataset.sgaiOrd = next++;
+        }
+        const room = boxes.map(b => +b.dataset.sgaiRoom);
+        if (Math.max(...room) < 2) return false;
+        const ord = c => (c.dataset.sgaiOrd === undefined ? 1e9 : +c.dataset.sgaiOrd);
+        const caps = boxes.flatMap(kidsOf).sort((x, y) => ord(x) - ord(y));
         const shown = caps.filter(c => !allGone(c, gone)), off = caps.filter(c => allGone(c, gone));
-        items.forEach((it, k) => {
-            // The gone ones wait, out of sight, on the last page. A game that leaves this page for
-            // a later one is taken out when that page is filled.
-            const want = shown.slice(k * per, k * per + per).concat(k === items.length - 1 ? off : []);
-            const have = [...it.children];
-            if (want.length !== have.length || want.some((c, i) => c !== have[i])) it.append(...want);
+        let at = 0;
+        boxes.forEach((b, k) => {
+            // A game that leaves this box for a later one is taken out when that box is filled.
+            const last = k === boxes.length - 1;
+            const mine = last ? shown.slice(at) : shown.slice(at, at + room[k]);
+            at += room[k];
+            // The box the games run out in keeps its size: Steam stretches a short row's games to
+            // fill it, so invisible stand-ins hold the places of the ones gone.
+            const need = mine.length && mine.length < room[k] ? room[k] - mine.length : 0;
+            const pads = [...b.children].filter(isPad);
+            for (const p of pads.splice(need)) p.remove();
+            while (pads.length < need) pads.push(makePad(mine[0]));
+            const want = mine.concat(pads, last ? off : []);
+            const have = [...b.children];
+            if (want.length !== have.length || want.some((c, i) => c !== have[i])) {
+                for (const c of mine) if (c.parentElement !== b) loadArt(c);
+                b.append(...want);
+            }
         });
         return true;
+    }
+    // A box with games in it, every one of them gone.
+    const emptied = (b, gone) => kidsOf(b).length > 0 && kidsOf(b).every(c => capsuleKid(c) && allGone(c, gone));
+
+    // Sale grids — the front page's sale tiers, rows of four — and lists under a heading — "Sandbox
+    // games, due to your recent playtime". The grid's rows refill, a row left with nothing goes, and
+    // a list whose games are all gone takes its heading with it.
+    function packGrids(gone) {
+        const holders = new Set([...document.querySelectorAll('.salerow')].map(r => r.parentElement));
+        for (const h of holders) {
+            const rows = [...h.children].filter(r => r.matches('.salerow'));
+            // Rows of one size together: a big capsule's row and a small one's draw different art.
+            const size = r => r.className.replace(/\s*sgai_\w+/g, '').trim();
+            for (const cls of new Set(rows.map(size))) reflow(rows.filter(r => size(r) === cls), gone);
+            let left = 0;
+            for (const r of rows) {
+                const g = kidsOf(r).length ? emptied(r, gone) : !!r.dataset.sgaiRoom;
+                r.classList.toggle('sgai_slide_gone', g);
+                if (!g) left++;
+            }
+            h.classList.toggle('sgai_section_gone', rows.length > 0 && !left && rows.length === h.children.length);
+        }
+        // A sale page's grids outside any carousel ("Popular titles", a hub's "On sale now" rows):
+        // their rows close up around a hidden game, as the rows on a carousel's page do.
+        packRowList([...document.querySelectorAll('.SaleSectionContainer')].filter(r => !r.closest('.carousel__slide')), gone);
+        // One box of games under a heading — the front page's tag blocks (two over two), "<tag> games,
+        // due to your recent playtime" (four in a row): the games left close up in Steam's order,
+        // the places of the ones gone held empty so nothing stretches, and with none left the
+        // heading goes too.
+        for (const [list, sec] of [...document.querySelectorAll('.home_content > .home_content_items')].map(l => [l, l.parentElement])
+            .concat([...document.querySelectorAll('.home_discounts_block .home_discount_games_ctn')].map(l => [l, l.closest('.home_discounts_block')]))) {
+            reflow([list], gone, true);
+            if (sec.querySelectorAll('.home_content_items, .home_discount_games_ctn').length !== 1) continue;
+            sec.classList.toggle('sgai_section_gone', emptied(list, gone));
+        }
+    }
+
+    // A trailer carousel — a creator's "Popular Titles" — shows one game at a time between its two
+    // arrows, and only that one is in the page, so there is nothing to lay out again: a game gone
+    // there is stepped past with Steam's own arrow. Coming round to one already stepped past means
+    // every game in it is gone, and the section goes.
+    function packTrailers(gone) {
+        for (const row of document.querySelectorAll('.VideoRow')) {
+            const sec = row.closest('.SaleSectionCtn') || row;
+            const arrows = row.querySelectorAll(':scope > button'), next = arrows[arrows.length - 1];
+            const shown = [...row.children].find(c => !c.matches('button'));
+            const id = shown && appIdOf(shown.querySelector('a[href*="/app/"]'));
+            if (!id) continue;
+            const d = sec.dataset, passed = (d.sgaiPassed || '').split(',').filter(Boolean);
+            if (!allGone(shown, gone)) {
+                for (const k of ['sgaiPassed', 'sgaiFrom', 'sgaiDir']) delete d[k];
+                sec.classList.remove('sgai_section_gone');
+                continue;
+            }
+            const since = Date.now() - (+d.sgaiTurned || 0);
+            if (since < 500) { setTimeout(packSoon, 520 - since); continue; }   // the last turn is still drawing
+            // Its arrows stop at either end rather than wrapping: a turn that went nowhere is an
+            // end, and the way back is the other arrow. Blocked both ways, or back at a game
+            // already stepped past: none of its games is left.
+            let dir = +(d.sgaiDir || 1);
+            if (d.sgaiFrom === id) {
+                if (dir < 0 || arrows.length < 2) { sec.classList.add('sgai_section_gone'); continue; }
+                dir = -1;
+                d.sgaiDir = dir;
+            } else if (passed.includes(id) || arrows.length < 2) { sec.classList.add('sgai_section_gone'); continue; }
+            d.sgaiPassed = passed.concat(id).join(',');
+            d.sgaiFrom = id;
+            d.sgaiTurned = Date.now();
+            (dir > 0 ? next : arrows[0]).click();
+        }
+    }
+
+    // The front page's tabs show the preview of the row last pointed at, and on switching tabs the
+    // first row's — which may be a game that is gone, leaving the preview column empty. Then the
+    // first row still shown is pointed at for it, the way the pointer would (Steam listens for that).
+    let tabWatch = null;
+    function packTabs(gone) {
+        const box = document.getElementById('tab_preview_container');
+        if (!box) return;
+        if (!tabWatch) {                                     // Steam switches the preview by its class
+            tabWatch = new MutationObserver(() => packTabs(SLIDES_GONE()));   // this alone, not every carousel on each hover
+            tabWatch.observe(box, { attributes: true, attributeFilter: ['class'], subtree: true, childList: true });
+        }
+        const f = box.querySelector('.tab_preview.focus');
+        if (!gone || !f || !f.closest(gone)) return;
+        const row = [...document.querySelectorAll('.tab_content a.tab_row_item')].find(r => r.getClientRects().length && !allGone(r, gone));
+        if (row) row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     }
 
     function packCarousel(tray, stepped) {
@@ -1525,6 +1702,9 @@
             s.classList.toggle('sgai_slide_gone', g && !(gone && s.matches(gone)));
             if (!g) { M++; if (k < i) before++; }
         });
+        // Nothing left: the panel goes with its heading and "See All" — when it is this carousel's alone.
+        const panel = root.closest('[data-featuretarget], .SaleSectionCtn');
+        if (panel && panel.querySelectorAll('.carousel__slider-tray').length === 1) panel.classList.toggle('sgai_section_gone', !M);
         if (M === N) {                                        // nothing gone: Steam's own layout
             if (root.classList.contains('sgai_packed')) {
                 root.classList.remove('sgai_packed', 'sgai_pack_none');
@@ -1567,8 +1747,9 @@
     // Steam itself sets a short row; a row with none left folds away, and a page with none left is
     // dropped from the carousel above. Games cannot move between pages here: those are React's,
     // and the lists (see pruneGames) are where that is done, on the next load.
-    function packRows(slide, gone) {
-        for (const row of slide.querySelectorAll('.SaleSectionContainer')) {
+    function packRows(slide, gone) { packRowList(slide.querySelectorAll('.SaleSectionContainer'), gone); }
+    function packRowList(rows, gone) {
+        for (const row of rows) {
             const kids = [...row.children];
             const cards = kids.filter(k => k.querySelector('a[href*="/app/"]'));
             if (!cards.length) continue;
@@ -1582,7 +1763,7 @@
             const packed = left < cards.length;
             row.classList.toggle('sgai_row_gone', packed && !left);
             row.classList.toggle('sgai_row_packed', packed && left > 0);
-            for (const k of kids) if (!cards.includes(k)) k.classList.toggle('sgai_spacer', packed);   // Steam's own centring spacers
+            for (const k of kids) k.classList.toggle('sgai_spacer', packed && !cards.includes(k));   // Steam's own centring spacers, not a card drawn late
             if (packed && left) {
                 const n = +((row.className.match(/ItemCount_(\d+)/) || [])[1]) || cards.length;
                 const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
@@ -1671,7 +1852,7 @@
         // On a game's own page nearly everything links to that game, and a card grown from any of
         // it takes whole page sections with it — the same reason the AI filter keeps to the
         // carousels of other games there.
-        const want = m.id in hidden && !(APP_PAGE_ID && !m.el.closest(APP_CAROUSELS));
+        const want = m.id in hidden && !(APP_PAGE_ID && !m.el.closest(APP_CAROUSELS)) && m.id !== dlcPageGame();
         const found = want ? hideTarget(m.el, 'corner', m.id, hidden[m.id] || (cacheGet(m.id) || {}).name, true) : null;
         const t = want ? ((found && found.t) || m.el) : null;
         m.sure = !want || !found || found.sure;
@@ -1975,7 +2156,7 @@
             if (r) return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
         }
         for (const root of roots) {
-            const star = onScreen(root.querySelector('.WishlistButton'));
+            const star = onScreen(root.querySelector('.WishlistButton') || root.querySelector('.WishlistButtonText')?.parentElement);
             if (!star) continue;
             const s = star.getBoundingClientRect();
             const size = Math.round(Math.min(40, Math.max(18, s.height)));   // the star's own size
@@ -1985,12 +2166,32 @@
         const spot = { left: r.right - BTN_PX - 4, top: r.top + 4, size: BTN_PX };
         // Signed in, Steam puts its own "…" menu button in that same corner of a capsule. Sit
         // just left of it, as beside the wishlist star, rather than on top of it.
-        const more = onScreen(el.querySelector('.ds_options > div'));
+        const more = onScreen((el.closest('[data-ds-appid]') || el).querySelector('.ds_options > div'));
         if (more) {
             const m = more.getBoundingClientRect();
             if (m.left < spot.left + BTN_PX && m.right > spot.left && m.top < spot.top + BTN_PX && m.bottom > spot.top)
                 return { left: m.left - BTN_PX - BTN_GAP, top: m.top + (m.height - BTN_PX) / 2, size: BTN_PX };
         }
+        return spot;
+    }
+
+    // Beside the name is no good when the name has scrolled off the screen or sits under Steam's
+    // sticky menu bar: clamped back on screen, the button would land on the menu. Then it takes the
+    // card's own corner, as far down as it must to be clear of whatever covers the card's top.
+    function clearSpot(spot, box) {
+        const free = (x, y) => {
+            if (y < 0 || y + spot.size > innerHeight || x < 0 || x + spot.size > innerWidth) return false;
+            const e = document.elementsFromPoint(x + spot.size / 2, y + spot.size / 2).find(n => !n.closest('.sgai_hide'));
+            if (!e || e.closest('[popover]:popover-open')) return true;
+            if (!hoverEl.contains(e)) return false;
+            // Inside the card, but on one of Steam's controls: "Find More like this", the star.
+            const ctl = e.closest('a[href], button, [role="button"]');
+            return !ctl || ctl === hoverEl || ctl.contains(hoverEl) || (ctl.matches('a[href]') && appIdOf(ctl) === hoverId);
+        };
+        if (free(spot.left, spot.top)) return spot;
+        const left = box.right - spot.size - 4;
+        for (let y = Math.max(box.top, 0) + 4; y + spot.size <= Math.min(box.bottom, innerHeight); y += 8)
+            if (free(left, y)) return { left, top: y, size: spot.size };
         return spot;
     }
 
@@ -2007,7 +2208,7 @@
             hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
             hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n— ${SIGNATURE}`;
         }
-        const spot = buttonSpot(hoverEl, hoverId);
+        const spot = clearSpot(buttonSpot(hoverEl, hoverId), box);
         const style = styleOf(hoverBtn, '.sgai_hide');
         style.width = style.height = spot.size + 'px';
         style.left = Math.round(Math.min(innerWidth - spot.size - 2, Math.max(2, spot.left))) + 'px';
@@ -2067,10 +2268,18 @@
         // links elsewhere on the page. Only a capsule the pointer is really inside counts, or the
         // button jumps to a card on the other side of the screen.
         let c = capsuleUnder(e.target);
-        if (c && !inBox(c.el, e.clientX, e.clientY)) c = null;
+        if (c && !inBox(c.el, e.clientX, e.clientY)) {
+            // A link drawn inline, its picture spilling out of it (/recommended/): the card around it.
+            const up = c.el.parentElement && c.el.parentElement.closest('[data-ds-appid]');
+            c = up && appIdOf(up) === c.id && inBox(up, e.clientX, e.clientY) ? { el: up, id: c.id } : null;
+        }
+        if (c && (cacheGet(c.id) || {}).notApp) c = null;  // a Labs banner, the recommender's button
         // On a game's own page, that game has a button of its own, after its title; anything else
         // pointed at there — its header, its media — is the page, not a card.
-        if (c && APP_PAGE_ID && c.id === APP_PAGE_ID && !c.el.closest(APP_CAROUSELS)) c = null;
+        // A DLC's, demo's or soundtrack's page links its full game in the header — that is the page
+        // too. Only those carousels can lose a game here (markOwn), so only they get the button.
+        if (c && APP_PAGE_ID && !c.el.closest(APP_CAROUSELS)) c = null;
+        if (c && c.id === dlcPageGame()) c = null;
         if (!c) {
             // Steam lays its own overlay over a capsule when you point at it, and that overlay is
             // not inside the game's link — going by the pointer's position keeps the button up.
@@ -2225,11 +2434,13 @@
         for (const el of document.querySelectorAll('[data-ds-appid]')) {
             const id = el.dataset.dsAppid;
             if (!due(el, id)) continue;
+            if (el.matches('a[href]') && !hrefApp(el.getAttribute('href')) && !el.querySelector('img')) { skip(el); continue; }   // a button, not a capsule
             if (/^\d+$/.test(id || '')) yield { el, id }; else skip(el);
         }
         for (const a of document.querySelectorAll('a[href*="/app/"]')) {
+            if (a.hasAttribute('data-ds-appid')) continue;            // the pass above has it, by its own id
             if (!fresh(a) && !a.dataset.sgaiId) continue;             // written off as a text link
-            const m = a.getAttribute('href').match(/\/app\/(\d+)/);
+            const id = hrefApp(a.getAttribute('href')), m = id && [, id];
             if (!due(a, m && m[1])) continue;
             if (a.closest('[data-ds-appid]') || a.querySelector('[data-ds-appid]')) { skip(a); continue; }  // data-ds-appid path handles these
             if (m && a.querySelector('img')) yield { el: a, id: m[1] };                // a capsule, not a text link
@@ -2271,13 +2482,12 @@
     const POSTER = /\/movie[\w.-]*\.(?:jpe?g|png|webp)/i;
     function widgetAppId(node) {
         for (let el = node, i = 0; el && i < 6; el = el.parentElement, i++) {
-            const a = el.querySelector('a[href*="/app/"]');
-            let m = a && a.getAttribute('href').match(/\/app\/(\d+)/);
-            if (m) return m[1];
+            const id = [...el.querySelectorAll('a[href*="/app/"]')].map(a => hrefApp(a.getAttribute('href'))).find(Boolean);
+            if (id) return id;
             const asset = [...el.querySelectorAll(ASSET)].find(x => !POSTER.test(assetUrl(x)));
             if (asset) {
                 const s = assetUrl(asset);
-                m = s.match(/\/apps\/(\d+)\//) || s.match(/\/store_trailers\/(?:steam\/apps\/)?(\d+)\//);
+                const m = s.match(/\/apps\/(\d+)\//) || s.match(/\/store_trailers\/(?:steam\/apps\/)?(\d+)\//);
                 if (m) return m[1];
             }
         }
