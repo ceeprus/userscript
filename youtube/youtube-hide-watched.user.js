@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.28
+// @version      6.29
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
@@ -447,6 +447,22 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 	const findMembersContainers = () => {
 		const membersContainers = [];
 
+		// "Get more from memberships" promo shelf: every tile in it is a
+		// members-only video, so hiding just the tiles leaves an empty shelf
+		// header behind. Take the whole shelf, plus the full-width section
+		// wrapping it on the home grid so no blank row break is left either.
+		document
+			.querySelectorAll(
+				'ytd-brand-video-shelf-renderer a[href^="/channel_memberships"]',
+			)
+			.forEach((link) => {
+				const shelf = link.closest('ytd-brand-video-shelf-renderer');
+				const container = shelf.closest('ytd-rich-section-renderer') || shelf;
+				if (!membersContainers.includes(container)) {
+					membersContainers.push(container);
+				}
+			});
+
 		document
 			.querySelectorAll(
 				[
@@ -479,6 +495,10 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 
 				// Never hide the item that's queued to play next.
 				if (container.closest('ytd-compact-autoplay-renderer')) return;
+
+				// Already covered by a promo shelf taken above; marking the
+				// tile too would stack the dimmed opacity.
+				if (membersContainers.some((c) => c.contains(container))) return;
 
 				if (!membersContainers.includes(container)) {
 					membersContainers.push(container);
