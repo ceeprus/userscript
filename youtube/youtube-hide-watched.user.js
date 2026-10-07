@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.29
+// @version      6.30
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
@@ -232,6 +232,11 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 .YT-HWV-BUTTON:focus,
 .YT-HWV-BUTTON:hover {
 	background: var(--yt-sys-color-baseline--overlay-button-primary);
+}
+
+.YT-HWV-BUTTON:focus-visible {
+	outline: 2px solid currentColor;
+	outline-offset: -2px;
 }
 
 .YT-HWV-BUTTON-DISABLED { opacity: 0.5 }
@@ -785,7 +790,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 	};
 
 	// Handles can arrive \u-escaped (ytInitialData embeds non-ASCII that
-	// way) — decode to raw unicode so they compare equal to decoded DOM hrefs.
+	// way); decode to raw unicode so they compare equal to decoded DOM hrefs.
 	const decodeHandle = (raw) => {
 		let handle = raw;
 		if (raw.includes('\\u')) {
@@ -973,7 +978,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 		return subbedSet;
 	};
 
-	// Coalesce concurrent callers into one fetch walk — on a cold cache,
+	// Coalesce concurrent callers into one fetch walk: on a cold cache,
 	// every debounced run() would otherwise start its own 60-page
 	// continuation crawl while the set is still loading.
 	let subsLoadInFlight = null;
@@ -1217,14 +1222,24 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 			}
 		}
 
-		// Insert buttons into DOM. Query and remove existing rows in the same
-		// sync block as the insert: renderButtons runs concurrently (debounced
-		// run + click handlers), and a reference taken before the awaits above
-		// goes stale, letting two overlapping calls each insert a row.
-		for (const el of document.querySelectorAll('.YT-HWV-BUTTONS')) {
-			el.remove();
+		// Swap the row in with one replaceChild, looked up in the same sync block: overlapping
+		// calls can't double-insert, and one mutation record is one observeDOM ignores.
+		const rows = [...document.querySelectorAll('.YT-HWV-BUTTONS')];
+		const current = rows.find(
+			(el) => el.parentNode === target.parentNode && el.nextSibling === target,
+		);
+		for (const el of rows) {
+			if (el !== current) el.remove();
 		}
-		target.parentNode.insertBefore(buttonArea, target);
+		const focusAt = current
+			? [...current.children].indexOf(document.activeElement)
+			: -1;
+		if (current) {
+			target.parentNode.replaceChild(buttonArea, current);
+		} else {
+			target.parentNode.insertBefore(buttonArea, target);
+		}
+		if (focusAt > -1) buttonArea.children[focusAt]?.focus();
 		logDebug('Rendered menu buttons');
 	};
 
