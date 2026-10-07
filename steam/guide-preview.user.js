@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Guide: Live Side Preview
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.04
+// @version      1.05
 // @description  Docks a live rendered preview to the right of the guide section editor, updating as you type. Reuses Steam's own bb_* styles and never touches the Edit/Preview/Changes tabs or the form fields.
 // @author       ceeprus
 // @match        https://steamcommunity.com/sharedfiles/editguidesubsection/*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  // ---- GM shims (work across managers) -----------------------------------
+  // GM shims (work across managers)
   var store = {
     get: function (k, d) { try { return GM_getValue(k, d); } catch (e) { var v = localStorage.getItem('gp_' + k); return v === null ? d : JSON.parse(v); } },
     set: function (k, v) { try { GM_setValue(k, v); } catch (e) { localStorage.setItem('gp_' + k, JSON.stringify(v)); } }
@@ -30,12 +30,16 @@
     catch (e) { var s = document.createElement('style'); s.textContent = css; document.head.appendChild(s); }
   }
 
-  // ========================================================================
-  //  BBCode -> HTML renderer (models Steam's guide output; validated against
-  //  a real guide's source/preview pair). Pure, no DOM deps.
-  // ========================================================================
+  // BBCode -> HTML renderer, modelled on Steam's guide output (checked against a real
+  // guide's source/preview pair). Pure, no DOM deps.
   var BB = (function () {
-    function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+    // Rendered inner HTML back to plain text, for [url] / [img] bodies that are themselves a URL.
+    function plain(html) {
+      return stripTags(html).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    }
+    // A link's own text must not be auto-linked again: nested <a> tags break the outer link.
+    function linkOpts(name, opts) { return name === 'url' || name === 'img' ? Object.assign({}, opts, { inLink: true }) : opts; }
     var RAW_TAGS = { code: 1, noparse: 1 };
     var KNOWN = { b:1,i:1,u:1,s:1,strike:1,spoiler:1,url:1,img:1,previewimg:1,h1:1,h2:1,h3:1,quote:1,code:1,noparse:1,hr:1,list:1,olist:1,table:1,tr:1,th:1,td:1 };
 
@@ -69,7 +73,7 @@
       var style = 'max-width:220px;max-height:220px;border-radius:2px;margin:4px;';
       if (float) style += 'float:' + float + ';';
       if (url) return '<a class="bb_link" href="' + esc(url) + '" target="_blank" rel="noopener"><img src="' + esc(url) + '" style="' + style + '"></a>';
-      return '<span class="gp-img-chip" title="preview image #' + esc(id) + '"' + (float ? ' style="float:' + float + '"' : '') + '>&#128247; image #' + esc(id) + '</span>';
+      return '<span class="gp-img-chip" title="preview image #' + esc(id) + '"' + (float ? ' style="float:' + float + '"' : '') + '>Image #' + esc(id) + '</span>';
     }
 
     function stripTags(s) { return s.replace(/<[^>]*>/g, ''); }
@@ -89,11 +93,11 @@
           return '<blockquote class="bb_blockquote">' + who + inner + '</blockquote>';
         }
         case 'url': {
-          var href = arg || stripTags(inner);
+          var href = arg || plain(inner);
           if (!/^[a-z]+:\/\//i.test(href) && !/^\//.test(href)) href = 'http://' + href;
           return '<a class="bb_link" href="' + esc(href) + '" target="_blank" rel="noopener">' + inner + '</a>';
         }
-        case 'img': return '<img class="bb_img" src="' + esc(stripTags(inner)) + '" style="max-width:100%;">';
+        case 'img': return '<img class="bb_img" src="' + esc(plain(inner)) + '" style="max-width:100%;">';
         default: return inner;
       }
     }
@@ -103,7 +107,7 @@
       for (; i.p < toks.length;) {
         if (++guard > toks.length * 4 + 100) break;
         var tk = toks[i.p];
-        if (tk.t === 'text') { out += autoLink(textToHtml(tk.v)); i.p++; continue; }
+        if (tk.t === 'text') { out += opts.inLink ? textToHtml(tk.v) : autoLink(textToHtml(tk.v)); i.p++; continue; }
         if (tk.t === 'star') { i.p++; continue; }
         if (tk.t === 'close') return out; // bubble up
         var name = tk.name;
@@ -114,7 +118,7 @@
         if (name === 'previewimg') { consumeTo(toks, i, 'previewimg'); out += resolvePreviewImg(tk.arg || '', opts.imgResolver); continue; }
         if (name === 'list' || name === 'olist') { out += parseList(toks, i, name, opts); continue; }
         if (name === 'table') { out += parseTable(toks, i, opts); continue; }
-        var inner = parseUntilClose(toks, i, name, opts);
+        var inner = parseUntilClose(toks, i, name, linkOpts(name, opts));
         out += wrap(name, tk.arg, inner);
       }
       return out;
@@ -153,7 +157,7 @@
         if (tk.t === 'close' && (tk.name === name || tk.name === 'list' || tk.name === 'olist')) { i.p++; break; }
         if (tk.t === 'star') { flush(); cur = ''; i.p++; continue; }
         var chunk;
-        if (tk.t === 'text') { chunk = autoLink(textToHtml(tk.v)); i.p++; }
+        if (tk.t === 'text') { chunk = opts.inLink ? textToHtml(tk.v) : autoLink(textToHtml(tk.v)); i.p++; }
         else if (tk.t === 'open') {
           if (!KNOWN[tk.name]) { chunk = esc(tk.rawTag); i.p++; }
           else {
@@ -163,7 +167,7 @@
             else if (RAW_TAGS[nm]) chunk = pullRawBody(toks, i, nm);
             else if (nm === 'previewimg') { consumeTo(toks, i, 'previewimg'); chunk = resolvePreviewImg(tk.arg || '', opts.imgResolver); }
             else if (nm === 'hr') { if (toks[i.p] && toks[i.p].t === 'close' && toks[i.p].name === 'hr') i.p++; chunk = '<hr class="bb_hr">'; }
-            else chunk = wrap(nm, tk.arg, parseUntilClose(toks, i, nm, opts));
+            else chunk = wrap(nm, tk.arg, parseUntilClose(toks, i, nm, linkOpts(nm, opts)));
           }
         } else { i.p++; continue; }
         if (cur === null) pre += chunk; else cur += chunk;
@@ -211,9 +215,7 @@
     };
   })();
 
-  // ========================================================================
-  //  UI
-  // ========================================================================
+  // UI
   var K_W = 'panelWidth', K_COLLAPSED = 'collapsed', K_REVEAL = 'reveal';
   var MIN_W = 280, MAX_W = 900, DEFAULT_W = 440;
 
@@ -245,10 +247,11 @@
       '.gp-title{font-size:12px;font-weight:700;letter-spacing:.03em;color:#67c1f5;text-transform:uppercase;white-space:nowrap;}',
       '.gp-count{margin-left:auto;font-size:11px;color:#8f98a0;white-space:nowrap;}',
       '.gp-count.gp-over{color:#e8734f;font-weight:700;}',
-      '.gp-btn{cursor:pointer;font-size:11px;line-height:1;padding:4px 7px;border-radius:2px;border:1px solid #000;',
+      '.gp-btn{cursor:pointer;font-family:inherit;font-size:11px;line-height:1;padding:4px 7px;border-radius:2px;border:1px solid #000;',
       '  background:#3a4b5c;color:#c6d4df;user-select:none;white-space:nowrap;}',
       '.gp-btn:hover{background:#4b6178;color:#fff;}',
-      '.gp-btn.gp-on{background:#5c7e10;color:#d2e885;}',
+      '.gp-btn.gp-on{background:#4a6610;color:#d2e885;}',
+      '.gp-btn:focus-visible,.gp-tab:focus-visible,.gp-grip:focus-visible{outline:2px solid #67c1f5;outline-offset:1px;}',
       '.gp-body{flex:1 1 auto;overflow:auto;padding:16px 18px;}',
       '.gp-body .subSectionTitle{font-size:22px;color:#e1e7ea;font-weight:300;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid #32404e;}',
       '.gp-grip{position:absolute;top:0;left:-3px;width:7px;height:100%;cursor:col-resize;z-index:2;}',
@@ -258,10 +261,10 @@
       '  letter-spacing:.08em;text-transform:uppercase;box-shadow:-3px 0 10px rgba(0,0,0,.4);user-select:none;}',
       '.gp-tab:hover{background:#356189;color:#fff;}',
       '.gp-img-chip{display:inline-block;padding:2px 8px;margin:4px;border:1px dashed #4b5b6b;border-radius:3px;color:#8f98a0;font-size:11px;}',
-      // reveal-spoilers override: Steam hides the inner span via visibility, so flip that (not just colors)
+      // Steam hides a spoiler's inner span with visibility, so revealing has to flip that too
       '.gp-panel.gp-reveal .bb_spoiler{color:#c6d4df !important;background-color:#39566e !important;}',
       '.gp-panel.gp-reveal .bb_spoiler>span{visibility:visible !important;}',
-      '.gp-empty{color:#66707b;font-style:italic;font-size:13px;}'
+      '.gp-empty{color:#8f98a0;font-style:italic;font-size:13px;}'
     ].join('\n'));
   }
 
@@ -273,20 +276,26 @@
     if (store.get(K_REVEAL, false)) panel.classList.add('gp-reveal');
 
     var grip = document.createElement('div'); grip.className = 'gp-grip';
+    grip.tabIndex = 0;
+    grip.setAttribute('role', 'separator');
+    grip.setAttribute('aria-orientation', 'vertical');
+    grip.setAttribute('aria-label', 'Resize preview (arrow keys)');
 
     var head = document.createElement('div'); head.className = 'gp-head';
     var t = document.createElement('span'); t.className = 'gp-title'; t.textContent = 'Live Preview';
     charCount = document.createElement('span'); charCount.className = 'gp-count';
 
-    var revealBtn = document.createElement('span'); revealBtn.className = 'gp-btn';
+    var revealBtn = document.createElement('button'); revealBtn.type = 'button'; revealBtn.className = 'gp-btn';
     function revealLabel(on) { revealBtn.textContent = on ? 'spoiler \u25BE' : 'spoiler \u25B8'; } // ▾ open / ▸ closed
     var revealOn = store.get(K_REVEAL, false);
     revealLabel(revealOn);
     if (revealOn) revealBtn.classList.add('gp-on');
+    revealBtn.setAttribute('aria-pressed', String(!!revealOn));
     revealBtn.title = 'Reveal spoiler contents in this preview';
     revealBtn.onclick = function () {
       var on = panel.classList.toggle('gp-reveal');
       revealBtn.classList.toggle('gp-on', on);
+      revealBtn.setAttribute('aria-pressed', String(on));
       revealLabel(on);
       store.set(K_REVEAL, on);
     };
@@ -312,7 +321,14 @@
     collapsedTab.className = 'gp-tab gp-hidden';
     collapsedTab.textContent = 'Preview';
     collapsedTab.title = 'Show/hide live preview (Alt+P)';
+    collapsedTab.tabIndex = 0;
+    collapsedTab.setAttribute('role', 'button');
     collapsedTab.onclick = function () { setCollapsed(!panel.classList.contains('gp-hidden')); };
+    collapsedTab.onkeydown = function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      collapsedTab.onclick();
+    };
     document.body.appendChild(collapsedTab);
 
     setWidth(store.get(K_W, DEFAULT_W));
@@ -336,6 +352,14 @@
       dragging = false; document.body.style.userSelect = '';
       store.set(K_W, parseInt(panel.style.width, 10) || DEFAULT_W);
     });
+    // The grip sits on the panel's left edge, so Left widens and Right narrows.
+    grip.addEventListener('keydown', function (e) {
+      var step = e.key === 'ArrowLeft' ? 20 : e.key === 'ArrowRight' ? -20 : 0;
+      if (!step) return;
+      e.preventDefault();
+      store.set(K_W, setWidth((parseInt(panel.style.width, 10) || DEFAULT_W) + step));
+      positionTab();
+    });
   }
 
   var editorVisible = true; // gets corrected by observer
@@ -345,6 +369,7 @@
     if (!collapsedTab) return;
     var collapsed = panel.classList.contains('gp-hidden');
     collapsedTab.style.right = collapsed ? '0px' : (panel.style.width || (DEFAULT_W + 'px'));
+    collapsedTab.setAttribute('aria-expanded', String(!collapsed));
   }
   function setCollapsed(on, skipSave) {
     panel.classList.toggle('gp-hidden', on);
@@ -352,7 +377,7 @@
     if (!skipSave) store.set(K_COLLAPSED, on);
   }
 
-  // ---- render ------------------------------------------------------------
+  // Render
   var desc, titleInput;
   function doRender() {
     if (!desc) return;
@@ -365,7 +390,7 @@
     titleTarget.style.display = tv ? '' : 'none';
 
     if (!val.trim()) {
-      renderTarget.innerHTML = '<div class="gp-empty">Nothing to preview yet \u2014 start typing in the editor.</div>';
+      renderTarget.innerHTML = '<div class="gp-empty">Nothing to preview yet. Start typing in the editor.</div>';
     } else {
       renderTarget.innerHTML = BB.render(val, { imgResolver: buildImgResolver() });
     }
@@ -378,7 +403,7 @@
   var rTimer = null;
   function scheduleRender() { clearTimeout(rTimer); rTimer = setTimeout(doRender, 120); }
 
-  // ---- editor-tab visibility --------------------------------------------
+  // Editor-tab visibility
   function editorPaneVisible() {
     var ep = q('EditorPane');
     if (!ep) return true;
@@ -410,7 +435,7 @@
     });
   }
 
-  // ---- init --------------------------------------------------------------
+  // Init
   function init() {
     if (panel) return true; // already built
     desc = q('description');
@@ -429,7 +454,8 @@
     watchTabs();
 
     document.addEventListener('keydown', function (e) {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'p' || e.key === 'P')) {
+      // e.code too: Alt+P types a symbol on some layouts (π on a Mac), so e.key alone misses it
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'p' || e.key === 'P' || e.code === 'KeyP')) {
         if (!editorVisible) return;
         e.preventDefault();
         setCollapsed(!panel.classList.contains('gp-hidden'));
