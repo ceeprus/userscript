@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backloggd - Copy Review Link
 // @namespace    https://github.com/ceeprus
-// @version      1.1
+// @version      1.2
 // @description  Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       Cee
@@ -36,11 +36,17 @@
                 background-color: transparent;
                 border: none;
                 color: inherit;
+                font: inherit;
                 opacity: 0.75;
                 transition: background-color 0.2s ease, opacity 0.2s ease, color 0.2s ease;
             }
             .copy-review-link-btn:hover {
                 opacity: 1;
+            }
+            .copy-review-link-btn:focus-visible {
+                opacity: 1;
+                outline: 2px solid currentColor;
+                outline-offset: 2px;
             }
             .copy-review-link-btn.copied {
                 background-color: rgba(40, 200, 90, 0.5);
@@ -72,10 +78,11 @@
     }
 
     function createCopyButton(href) {
-        const btn = document.createElement('a');
+        const btn = document.createElement('button');
+        btn.type = 'button';
         btn.className = 'copy-review-link-btn';
         btn.title = 'Copy review link';
-        btn.setAttribute('role', 'button');
+        btn.setAttribute('aria-label', 'Copy review link');
         btn.innerHTML = '<i class="fa-solid fa-link"></i>';
 
         btn.addEventListener('click', (e) => {
@@ -136,7 +143,8 @@
     document.addEventListener('turbo:render', init);
     document.addEventListener('turbo:frame-load', init);
 
-    // Catch infinite-scroll / dynamically loaded review cards
+    // Catch infinite-scroll / dynamically loaded review cards. Watch <html>, not <body>:
+    // Turbo swaps the whole body on navigation, which would leave the observer on a dead node.
     const observer = new MutationObserver(() => addCopyButtons());
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
 })();
