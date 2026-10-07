@@ -4,12 +4,12 @@ bunch of fast vibecoded stuff, not for your use
  
 ## Scripts
  
-Click a script name to install it — if you have [Violentmonkey](https://violentmonkey.github.io/) installed, it'll prompt you to install automatically.
+Click a script name to install it. If you have [Violentmonkey](https://violentmonkey.github.io/) installed, it'll prompt you to install automatically.
  
  
 | Download | Description |
 | --- | --- |
-| [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds an panel to X/Twitter profiles to hide multiple post types. |
+| [Twitter Viewer +](https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js) | Adds a panel to X/Twitter profiles to hide multiple post types. |
 | [YouTube: Hide Watched Videos](https://raw.githubusercontent.com/ceeprus/userscript/main/youtube/youtube-hide-watched.user.js) | Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds. |
 | [Steam Inventory Augmentor](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-inventory-augmentor.user.js) | Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools. |
 | [Steam: AI Content Disclosure Badge](https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-ai-disclosure.user.js) | Flags Steam games with an AI content disclosure, and badges, blurs or hides them with one click on the eye in Steam's header. You can also hide any other game you want, and share your hidden list. |
@@ -22,6 +22,6 @@ Click a script name to install it — if you have [Violentmonkey](https://violen
 | [VRChat: Hide Worlds](https://raw.githubusercontent.com/ceeprus/userscript/main/vrchat/vrchat-hide-worlds.user.js) | Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card. Eye button next to the friends list cycles hidden worlds between normal, dimmed and gone; the rocket button next to it picks the instance type and region, and can press Launch World for you. |
 | [Modrinth Plus](https://raw.githubusercontent.com/ceeprus/userscript/main/modrinth/modrinth-list-sort.user.js) | Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results. |
 
-## Steam Inventory Augmentor — backpack.tf key
+## Steam Inventory Augmentor: backpack.tf key
 
 Ref/key pricing needs a free backpack.tf API key: log into [backpack.tf](https://backpack.tf) with Steam → Settings → [API Access](https://backpack.tf/developer) → register a key (any site name works) → open your Steam inventory, click the script's ⚙ button, paste the key under Pricing → reload. The key stays in your browser only.
