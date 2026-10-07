@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.30
+// @version      1.31
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -94,14 +94,20 @@
     set.add(id);
   }
 
+  // Secondary grey for the active X theme; X's own #71767b is under 4.5:1 on the dark cards.
+  let MUTED = '#8b98a5';
+  function mutedColor() {
+    const m = (getComputedStyle(document.body).backgroundColor || '').match(/\d+/g);
+    if (!m) return '#8b98a5';
+    return (+m[0] + +m[1] + +m[2]) > 382 ? '#536471' : '#8b98a5';
+  }
+
   let collapsed       = false; // panel minimised
   const groupCollapsed = { filters: false, display: false, tools: false }; // each section's minimise state
   let activeProfile   = null;  // handle of the profile the counters currently belong to
   let textWasActive   = false; // whether hide-post-text ran last pass (so we can undo "Show more")
   let filtersWereActive = false; // ran the tweet-hiding pass last time (so we can restore once)
   let modsWereActive    = false; // ran the modifier pass last time (so we can restore once)
-
-  /* -------------------------------- persistence -------------------------------- */
 
   function loadState() {
     let saved = null;
@@ -125,12 +131,10 @@
     } catch (e) {}
   }
 
-  /* ------------------------------- locate the sidebar ------------------------------- */
-
   function findSection() {
     const aside = document.querySelector('aside[aria-label="Who to follow"]');
     if (aside) return aside;
-    // Other named sidebar modules — single-post pages lead with "Relevant people".
+    // Other named sidebar modules; single-post pages lead with "Relevant people".
     const wanted = ['you might like', 'who to follow', 'relevant people'];
     const headings = document.querySelectorAll(
       'aside[role="complementary"] [role="heading"], [data-testid="sidebarColumn"] [role="heading"]');
@@ -155,10 +159,9 @@
     return aside.parentElement ? (aside.parentElement.parentElement || aside.parentElement) : aside;
   }
 
-  /* --------------------------------- build the panel --------------------------------- */
-
   function buildBox(referenceCard, headingTextEl) {
     const ref = getComputedStyle(referenceCard);
+    MUTED = mutedColor();
 
     const box = document.createElement('div');
     box.id = BOX_ID;
@@ -209,6 +212,7 @@
 
     const head = document.createElement('div');
     head.setAttribute('role', 'button');
+    head.setAttribute('aria-expanded', String(!groupCollapsed[key]));
     head.tabIndex = 0;
     Object.assign(head.style, {
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -218,12 +222,11 @@
     const label = document.createElement('span');
     label.textContent = title;
     Object.assign(label.style, {
-      fontFamily: FONT_STACK, fontSize: '12px', fontWeight: '700', color: '#71767b',
-      letterSpacing: '.04em', textTransform: 'uppercase',
+      fontFamily: FONT_STACK, fontSize: '13px', fontWeight: '700', color: MUTED,
     });
 
     const chev = document.createElement('span');
-    Object.assign(chev.style, { flex: '0 0 auto', display: 'flex', alignItems: 'center', color: '#71767b' });
+    Object.assign(chev.style, { flex: '0 0 auto', display: 'flex', alignItems: 'center', color: MUTED });
     chev.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" ' +
       'style="transition:transform .15s ease;fill:currentColor">' +
       '<path d="M3.543 8.96l1.414-1.42L12 14.59l7.043-7.05 1.414 1.42L12 17.41z"/></svg>';
@@ -237,6 +240,7 @@
       groupCollapsed[key] = !groupCollapsed[key];
       rows.style.display = groupCollapsed[key] ? 'none' : 'flex';
       head.style.marginBottom = groupCollapsed[key] ? '0' : '10px';
+      head.setAttribute('aria-expanded', String(!groupCollapsed[key]));
       applyChev();
       saveState();
     };
@@ -280,10 +284,11 @@
     const btn = document.createElement('div');
     btn.setAttribute('role', 'button');
     btn.setAttribute('aria-label', 'Minimise panel');
+    btn.setAttribute('aria-expanded', String(!collapsed));
     btn.tabIndex = 0;
     Object.assign(btn.style, {
       flex: '0 0 auto', marginLeft: '8px', padding: '2px', cursor: 'pointer',
-      color: '#71767b', display: 'flex', alignItems: 'center',
+      color: MUTED, display: 'flex', alignItems: 'center',
     });
     btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" ' +
       'style="transition:transform .15s ease;fill:currentColor">' +
@@ -297,6 +302,7 @@
       e.stopPropagation();
       collapsed = !collapsed;
       apply();
+      btn.setAttribute('aria-expanded', String(!collapsed));
       const body = document.getElementById(BODY_ID);
       if (body) body.style.display = collapsed ? 'none' : '';
       header.style.marginBottom = collapsed ? '0' : '12px';
@@ -345,11 +351,11 @@
       const counter = document.createElement('span');
       counter.dataset.counter = item.key;
       counter.textContent = '(0/0)';
-      Object.assign(counter.style, { fontSize: '13px', color: '#71767b', whiteSpace: 'nowrap' });
+      Object.assign(counter.style, { fontSize: '13px', color: MUTED, whiteSpace: 'nowrap' });
       left.append(counter);
     }
 
-    row.append(left, buildCheckbox(item.key));
+    row.append(left, buildCheckbox(item.key, item.label));
     return row;
   }
 
@@ -362,12 +368,12 @@
     btn.tabIndex = 0;
     Object.assign(btn.style, {
       flex: '0 0 auto', marginLeft: '8px', padding: '2px', cursor: 'pointer',
-      color: '#71767b', display: 'flex', alignItems: 'center',
+      color: MUTED, display: 'flex', alignItems: 'center',
     });
     btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill:currentColor">' +
       '<path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
     btn.addEventListener('mouseenter', () => { btn.style.color = '#e7e9ea'; });
-    btn.addEventListener('mouseleave', () => { btn.style.color = '#71767b'; });
+    btn.addEventListener('mouseleave', () => { btn.style.color = MUTED; });
 
     const run = (e) => { e.preventDefault(); e.stopPropagation(); resetAll(); };
     btn.addEventListener('click', run);
@@ -411,9 +417,10 @@
   }
 
   // X-style square checkbox; checked fill uses the live accent colour.
-  function buildCheckbox(key) {
+  function buildCheckbox(key, label) {
     const box = document.createElement('div');
     box.setAttribute('role', 'checkbox');
+    box.setAttribute('aria-label', label);
     box.tabIndex = 0;
     Object.assign(box.style, {
       flex: '0 0 auto', width: '20px', height: '20px', marginLeft: '12px',
@@ -425,7 +432,7 @@
     const render = () => {
       const accent = accentColors();
       box.setAttribute('aria-checked', String(state[key]));
-      box.style.border = '2px solid ' + (state[key] ? accent.bg : '#536471');
+      box.style.border = '2px solid ' + (state[key] ? accent.bg : MUTED);
       box.style.backgroundColor = state[key] ? accent.bg : 'transparent';
       box.innerHTML = state[key]
         ? '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
@@ -447,8 +454,6 @@
     box.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') toggle(e); });
     return box;
   }
-
-  /* -------------------------------- classification -------------------------------- */
 
   // Profile handle from the URL, or null when not on a profile feed.
   function getProfileOwner() {
@@ -484,7 +489,7 @@
       const quoteEl = a.querySelector('div[role="link"]');
       const hasQuote = !!(quoteEl && quoteEl.querySelector('[data-testid="User-Name"]'));
 
-      // "Replying to" that belongs to THIS tweet — not to a reply shown inside the quoted tweet.
+      // "Replying to" that belongs to this tweet, not to a reply shown inside the quoted tweet.
       let replyingTo = false;
       for (const d of a.querySelectorAll('div[dir="ltr"]')) {
         if (hasQuote && quoteEl.contains(d)) continue;
@@ -506,8 +511,8 @@
     const multi       = articles.length >= 2;
     const otherAuthor = !!owner && infos.some(x => x.author && x.author !== owner);
 
-    // Explicit "reposted" context is a definitive retweet, even when the reposted tweet is itself
-    // a reply or quote — the owner's action is the repost, so it outranks reply/quote/thread.
+    // "Reposted" context always means a retweet, even of a reply or quote: the owner's action is
+    // the repost, so it outranks reply/quote/thread.
     const isRetweet = infos.some(x => x.retweet);
 
     // Reply: thread line, "Replying to", or in-cell convo with another author. Reposts are excluded
@@ -542,8 +547,6 @@
     if (cell.querySelector('a[href*="/i/status/"]')) return true;
     return /show\s+(?:more|additional|this)\b[^]*?(?:repl|thread)/i.test(cell.textContent || '');
   }
-
-  /* ----------------------------- per-tweet modifiers ----------------------------- */
 
   // Media height is reserved by a padding-bottom spacer, so resize that container, not the leaf.
   function aspectContainer(mediaEl) {
@@ -602,8 +605,6 @@
     modsWereActive = modsActive;
   }
 
-  /* --------------------------------- apply / counters --------------------------------- */
-
   function applyFilters() {
     // Reset cumulative counts when switching to a different profile.
     const owner = getProfileOwner();
@@ -651,7 +652,10 @@
         FILTERS.forEach(f => {
           const el = box.querySelector('[data-counter="' + f.key + '"]');
           if (!el) return;
-          el.textContent = '(' + (state[f.key] ? hiddenIds[f.key].size : 0) + '/' + seen[f.key].size + ')';
+          // Only on change: every write is a childList mutation, and the body observer
+          // would re-run this pass on the next frame, forever.
+          const text = '(' + (state[f.key] ? hiddenIds[f.key].size : 0) + '/' + seen[f.key].size + ')';
+          if (el.textContent !== text) el.textContent = text;
         });
       }
       filtersWereActive = anyFilterOn;
@@ -659,8 +663,6 @@
 
     applyTweetMods();
   }
-
-  /* ------------------------------------ wiring ------------------------------------ */
 
   function ensureBox() {
     if (document.getElementById(BOX_ID)) return;
