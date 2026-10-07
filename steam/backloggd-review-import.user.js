@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Curator: Import Review Link from Backloggd
 // @namespace    https://github.com/ceeprus
-// @version      2.4
+// @version      2.5
 // @description  Adds a searchable "Import from Backloggd" box next to the "URL for full review (Optional)" field on Steam Curator review-edit pages, letting you pick one of your Backloggd reviews, auto-fill the link, and optionally import the review text into "Write your review". Prompts for your Backloggd username on first use.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -31,8 +31,7 @@
 
     const STYLE_ID = 'bglg-import-style';
 
-    // Returns the saved Backloggd username, prompting the user to set one if
-    // this is the first time the script has run (or it was never configured).
+    // Saved Backloggd username; prompts for one on first use when asked to.
     function getUsername(promptIfMissing) {
         let username = GM_getValue(USERNAME_KEY, '').trim();
         if (!username && promptIfMissing) {
@@ -104,6 +103,14 @@
                 border-color: #67c1f5;
                 color: #fff;
             }
+            .bglg-import-toggle:focus-visible,
+            .bglg-import-item:focus-visible,
+            .bglg-import-refresh:focus-visible,
+            .bglg-import-loadmore:focus-visible,
+            .bglg-import-blurb-prompt a:focus-visible {
+                outline: 2px solid #67c1f5;
+                outline-offset: 1px;
+            }
             .bglg-import-toggle-icon {
                 width: 16px;
                 height: 16px;
@@ -141,10 +148,11 @@
             .bglg-import-search:focus {
                 outline: none;
                 border-color: #67c1f5;
+                box-shadow: 0 0 0 1px #67c1f5;
             }
             .bglg-import-status {
                 margin-bottom: 6px;
-                opacity: 0.7;
+                color: #8f98a0;
             }
             .bglg-import-item {
                 display: flex;
@@ -176,16 +184,21 @@
             }
             .bglg-import-item-date {
                 font-size: 11px;
-                opacity: 0.6;
+                color: #8f98a0;
                 margin-top: 1px;
             }
-            .bglg-import-item:hover {
+            .bglg-import-item:hover,
+            .bglg-import-item:focus {
                 background: #2a475e;
                 color: #fff;
             }
+            .bglg-import-item:hover .bglg-import-item-date,
+            .bglg-import-item:focus .bglg-import-item-date {
+                color: #c6d4df;
+            }
             .bglg-import-empty {
                 padding: 5px 6px;
-                opacity: 0.6;
+                color: #8f98a0;
             }
             .bglg-import-bottom-row {
                 display: flex;
@@ -313,16 +326,16 @@
 
     function fetchPage(username, page) {
         return new Promise((resolve, reject) => {
-            const url = `https://backloggd.com/u/${username}/reviews/?page=${page}`;
+            const url = `https://backloggd.com/u/${encodeURIComponent(username)}/reviews/?page=${page}`;
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
                 onload(resp) {
                     if (resp.status === 403) {
                         if (typeof GM_openInTab === 'function') {
-                            GM_openInTab(`https://backloggd.com/u/${username}/`, { active: true });
+                            GM_openInTab(`https://backloggd.com/u/${encodeURIComponent(username)}/`, { active: true });
                         }
-                        reject(new Error('Blocked (403) — opened your Backloggd profile in a new tab, complete any check there and refresh.'));
+                        reject(new Error('Blocked (403). Your Backloggd profile opened in a new tab: complete any check there, then press refresh list.'));
                         return;
                     }
                     if (resp.status < 200 || resp.status >= 300) {
@@ -580,12 +593,21 @@
 
                 item.appendChild(textWrap);
 
-                item.addEventListener('click', () => {
+                const pick = () => {
                     input.value = r.url;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
-                    panel.style.display = 'none';
+                    setPanelOpen(false);
                     offerBlurbText(r.text);
+                    input.focus();
+                };
+                item.tabIndex = 0;
+                item.setAttribute('role', 'button');
+                item.addEventListener('click', pick);
+                item.addEventListener('keydown', (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    pick();
                 });
                 resultsEl.appendChild(item);
             });
@@ -638,7 +660,8 @@
 
         function handleLoadMore() {
             const username = getUsername(false);
-            if (!username) return;
+            // allReviews is null after a refresh that failed, with the button still showing
+            if (!username || !allReviews) return;
 
             const q = searchBox.value.trim().toLowerCase();
             const allMatches = q
@@ -681,14 +704,28 @@
                 });
         }
 
+        function setPanelOpen(open) {
+            panel.style.display = open ? 'block' : 'none';
+            toggleBtn.setAttribute('aria-expanded', String(open));
+        }
+        toggleBtn.setAttribute('role', 'button');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+
         toggleBtn.addEventListener('click', (e) => {
             e.preventDefault();
             const opening = panel.style.display === 'none';
-            panel.style.display = opening ? 'block' : 'none';
+            setPanelOpen(opening);
             if (opening) {
                 searchBox.focus();
                 if (!allReviews && !loading) load(false);
             }
+        });
+
+        panel.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            setPanelOpen(false);
+            toggleBtn.focus();
         });
 
         searchBox.addEventListener('input', () => {
@@ -711,8 +748,8 @@
         });
 
         document.addEventListener('click', (e) => {
-            if (!container.contains(e.target)) {
-                panel.style.display = 'none';
+            if (!container.contains(e.target) && panel.style.display !== 'none') {
+                setPanelOpen(false);
             }
         });
     }
