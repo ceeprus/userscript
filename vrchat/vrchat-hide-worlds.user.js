@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.31
+// @version      1.32
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -18,8 +18,7 @@
 // @updateURL https://raw.githubusercontent.com/ceeprus/userscript/main/vrchat/vrchat-hide-worlds.user.js
 // ==/UserScript==
 
-// To submit bugs or submit revisions please see visit the repository at:
-// https://github.com/ceeprus/userscript
+// Bugs and revisions: https://github.com/ceeprus/userscript
 
 const REGEX_WORLD_ID = /\/home\/world\/(wrld_[0-9a-f-]{36})/iu;
 const WORLD_LINK_SELECTOR = 'a[href*="/home/world/wrld_"]';
@@ -40,9 +39,8 @@ const CHILD_HEADING_SELECTOR = HEADING_SELECTOR.split(',')
 const STATES = ['normal', 'dimmed', 'hidden'];
 const MAX_CLIMB = 10;
 
-// An instance id is `name~key(value)~...`, and VRChat's own parser only
-// accepts these keys in this order. `name` is a plain random integer below
-// 1e5 — the site generates it client-side, nothing is reserved server-side.
+// Instance id: `name~key(value)~...`; VRChat's parser accepts only these keys, in this order.
+// `name` is a random integer below 1e5, made client-side; nothing is reserved server-side.
 const INSTANCE_TYPES = [
 	{ id: 'public', label: 'Public', hint: 'Anybody can join', keys: [] },
 	{
@@ -93,7 +91,6 @@ const LAUNCH_WORLD_SELECTOR = 'a[href^="vrchat://"]';
 const AUTO_LAUNCH_TIMEOUT = 20000;
 
 ((_undefined) => {
-	// Enable for debugging
 	const DEBUG = false;
 
 	const KEY_STATE = 'VRCWH_STATE';
@@ -135,8 +132,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		localStorage.setItem(key, value);
 	};
 
-	// GreaseMonkey no longer supports GM_addStyle. So we have to define
-	// our own polyfill here
+	// Greasemonkey 4 dropped GM_addStyle.
 	const addStyle = (aCss) => {
 		const head = document.getElementsByTagName('head')[0];
 		if (head) {
@@ -327,9 +323,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	font-size: 13px;
 	gap: 6px;
 	justify-content: center;
-	/* Absolute, never in flow: a Discover card is background-size:cover and
-	   takes its height from its child, so an in-flow button made the card
-	   taller and re-cropped the artwork. */
+	/* Never in flow: a Discover card is background-size:cover and sized by its
+	   child, so an in-flow button made it taller and re-cropped the artwork. */
 	bottom: 6px;
 	left: 6px;
 	right: 6px;
@@ -450,7 +445,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 .VRCWH-CHECK.VRCWH-ON { border-color: #4fc3d9; color: #fff }
 
 .VRCWH-CHECK-BOX {
-	border: 2px solid #55606a;
+	border: 2px solid #7d8890;
 	border-radius: 3px;
 	flex: none;
 	height: 15px;
@@ -476,6 +471,17 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 }
 
 .VRCWH-PANEL-NOTE { color: #8b969c; font-size: 11px; margin-top: 8px }
+
+.VRCWH-BTN:focus-visible,
+.VRCWH-FAB:focus-visible,
+.VRCWH-JOIN:focus-visible,
+.VRCWH-PAGE-BTN:focus-visible,
+.VRCWH-OPT:focus-visible,
+.VRCWH-CHIP:focus-visible,
+.VRCWH-CHECK:focus-visible {
+	outline: 2px solid #4fc3d9;
+	outline-offset: 2px;
+}
 `);
 
 	const ICONS = {
@@ -485,8 +491,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		eyeSlash:
 			'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="currentColor" d="M24 14c5.52 0 10 4.48 10 10 0 1.29-.26 2.52-.71 3.65l5.85 5.85c3.02-2.52 5.4-5.78 6.87-9.5-3.47-8.78-12-15-22.01-15-2.8 0-5.48.5-7.97 1.4l4.32 4.31c1.13-.44 2.36-.71 3.65-.71zM4 8.55l4.56 4.56.91.91C6.17 16.6 3.56 20.03 2 24c3.46 8.78 12 15 22 15 3.1 0 6.06-.6 8.77-1.69l.85.85L39.45 44 42 41.46 6.55 6 4 8.55zM15.06 19.6l3.09 3.09c-.09.43-.15.86-.15 1.31 0 3.31 2.69 6 6 6 .45 0 .88-.06 1.3-.15l3.09 3.09C27.06 33.6 25.58 34 24 34c-5.52 0-10-4.48-10-10 0-1.58.4-3.06 1.06-4.4zm8.61-1.57 6.3 6.3L30 24c0-3.31-2.69-6-6-6l-.33.03z"/></svg>',
 	};
-
-	// ===========================================================
 
 	// In-memory mirror of storage so the render path stays synchronous.
 	// `hidden` maps world id -> world name, name is tooltip-only.
@@ -513,8 +517,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			return {};
 		}
 	};
-
-	// ===========================================================
 
 	const debounce = function (func, wait, immediate) {
 		let timeout;
@@ -556,8 +558,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		el.innerHTML = ICONS[name];
 	};
 
-	// ===========================================================
-
 	const worldIdFrom = (href) => {
 		const match = href && REGEX_WORLD_ID.exec(href);
 		return match ? match[1] : null;
@@ -566,9 +566,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const linkWorldId = (anchor) =>
 		worldIdFrom(anchor.getAttribute('href') || anchor.href);
 
-	// Emotion class hashes (css-1w3pyrn, e3qzuk74, ...) change on every VRChat
-	// deploy, so cards are found structurally: walk up from a world link until
-	// a parent holds more than one distinct world.
+	// Emotion class hashes change on every deploy, so cards are found by shape:
+	// climb from a world link until a parent holds more than one distinct world.
 	const resolveCard = (link, idCache) => {
 		const distinctWorldIds = (el) => {
 			let count = idCache.get(el);
@@ -588,11 +587,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			const parent = node.parentElement;
 			if (!parent || parent === document.body) return null;
 			if (distinctWorldIds(parent) > 1) {
-				// A section holding a single world lets the climb run past the
-				// card and into the section itself, so check the container is
-				// really a card list and the candidate is really a card. Cards
-				// carry exactly one <h4> (the favourite count) and never a
-				// title heading; sections and world pages have both.
+				// A one-world section lets the climb overshoot the card. A real card has one
+				// <h4> (the favourite count) and no title heading; sections have both.
 				const siblingCards = [...parent.children].filter(
 					(child) => distinctWorldIds(child) === 1,
 				);
@@ -607,9 +603,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		return null;
 	};
 
-	// Identity of a card as a layout, ignoring our own classes. Cards in a
-	// list all share one Emotion class string, so a signature learned from
-	// the cards that did resolve identifies the ones that could not.
+	// A card's layout identity, our classes ignored. Cards in a list share one class
+	// string, so cards that resolved identify the ones that could not.
 	const cardSignature = (el) => {
 		const classes = [...el.classList]
 			.filter((name) => !name.startsWith('VRCWH-'))
@@ -618,9 +613,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		return classes ? `${el.tagName}.${classes}` : null;
 	};
 
-	// Second chance for a link whose climb found no card list: a section
-	// holding a single world has no sibling cards to compare against, so
-	// match it against the signatures learned elsewhere on the page.
+	// Second chance for a one-world section, which has no sibling cards to compare
+	// against: match it to signatures learned elsewhere on the page.
 	const resolveCardBySignature = (link, idCache, signatures) => {
 		if (signatures.size === 0) return null;
 
@@ -664,9 +658,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const worldNameFrom = (root) =>
 		textWithoutBadge(titleElementFrom(root)).slice(0, 80);
 
-	// Goes inside the title element rather than after it: a world page header
-	// is a column flex, so a sibling would drop onto its own full-width row
-	// instead of sitting beside the name.
+	// Inside the title, not after it: a world page header is a column flex, where a
+	// sibling would drop onto its own row instead of sitting beside the name.
 	const syncBadge = (anchor, marked) => {
 		if (!anchor) return;
 
@@ -682,10 +675,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		badge.textContent = 'Hidden';
 		anchor.appendChild(badge);
 	};
-
-	// ===========================================================
-
-	// ===========================================================
 
 	// Only the private instance types need an owner id, so this is fetched
 	// lazily and kept for the session.
@@ -719,7 +708,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const typeById = (id) =>
 		INSTANCE_TYPES.find((entry) => entry.id === id) || INSTANCE_TYPES[0];
 
-	// Key order is VRChat's, not ours — its parser walks a fixed list.
+	// Key order is VRChat's, not ours: its parser walks a fixed list.
 	const buildInstanceId = (type, region, ownerId) => {
 		const parts = [String(Math.floor(Math.random() * 1e5))];
 
@@ -740,9 +729,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			body: '{}',
 		});
 
-	// Never builds a vrchat:// link by hand — one without shortName/attach=1
-	// starts a second client instead of moving the running one. Open VRChat's
-	// launch page and let its own link do the work.
+	// Never a hand-built vrchat:// link: without shortName/attach=1 it starts a second
+	// client instead of moving the running one. VRChat's launch page has the right link.
 	const openInstance = (worldId, instanceId) => {
 		const hash = launch.autoLaunch ? AUTO_HASH : '';
 		window.open(
@@ -809,8 +797,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 
 		openInstance(worldId, instanceId);
 	};
-
-	// ===========================================================
 
 	const toggleCard = async (card) => {
 		// Read the id off the card rather than closing over it: VRChat recycles
@@ -937,9 +923,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		setClass(card, 'VRCWH-WORLD-MARKED', marked && toggleState === 'normal');
 	};
 
-	// A world page shows one world, so the card resolver finds nothing there.
-	// Drive it off the URL instead: badge the title, recolour Launch, and add
-	// a labelled toggle so a world can be hidden while you are looking at it.
+	// A world page has no card list, so it is driven off the URL: badge the title,
+	// recolour Launch, and add a toggle to hide the world from its own page.
 	let pageButton = null;
 
 	const togglePageWorld = async (title) => {
@@ -1003,9 +988,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		setClass(pageButton, 'VRCWH-BTN-ON', marked);
 	};
 
-	// A row whose every card is hidden leaves a heading and two scroll arrows
-	// over empty space, so collapse the whole section instead. Returns the
-	// section it touched so the caller can clear the ones it no longer owns.
+	// A row with every card hidden collapses whole, heading and arrows included.
+	// Returns the section so the caller can clear the ones it no longer owns.
 	const updateRow = (container, cards) => {
 		const allHidden = cards.every((card) =>
 			card.classList.contains('VRCWH-WORLD-HIDDEN'),
@@ -1031,9 +1015,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			const signatures = new Set();
 			const rows = new Map();
 			const pending = [];
-			// Sections collapsed by an earlier pass. Anything still in here at
-			// the end no longer resolves, so its class has to come back off or
-			// the section stays invisible until a reload.
+			// Sections collapsed earlier. Any left here at the end no longer resolve and
+			// must be uncollapsed, or they stay invisible until a reload.
 			const stale = new Set(document.querySelectorAll('.VRCWH-ROW-EMPTY'));
 
 			const take = (resolved, id) => {
@@ -1084,15 +1067,10 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		}
 	};
 
-	// ===========================================================
-
 	let fab = null;
 
-	// .friends-button is fixed with a hard-coded top/right. Read its real box
-	// instead of duplicating those numbers.
-	// Geometry rides on custom properties instead of the `top`/`right`
-	// longhands: the base rule already sets those, and an inline longhand does
-	// not reliably outrank it in every environment this script runs in.
+	// Geometry goes through custom properties, not inline top/right: an inline
+	// longhand did not reliably outrank the base rule in every manager.
 	const setVar = (el, name, value) => {
 		if (!el) return;
 		if (value === null) el.style.removeProperty(name);
@@ -1198,13 +1176,13 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		el.addEventListener('keydown', async (event) => {
 			if (event.key !== 'Enter' && event.key !== ' ') return;
 			event.preventDefault();
-			await cycleState();
+			// Alt+Enter mirrors alt-click
+			if (event.altKey) await unhideAll();
+			else await cycleState();
 		});
 
 		return el;
 	};
-
-	// ===========================================================
 
 	let launchFab = null;
 	let panel = null;
@@ -1243,6 +1221,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		row.type = 'button';
 		row.className = 'VRCWH-OPT';
 		setClass(row, 'VRCWH-ON', selected);
+		row.setAttribute('aria-pressed', String(selected));
 
 		const title = document.createElement('span');
 		title.className = 'VRCWH-OPT-NAME';
@@ -1270,6 +1249,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			chip.className = 'VRCWH-CHIP';
 			chip.textContent = entry.label;
 			setClass(chip, 'VRCWH-ON', entry.id === current);
+			chip.setAttribute('aria-pressed', String(entry.id === current));
 			chip.addEventListener('click', () => onPick(entry.id));
 			wrap.appendChild(chip);
 		}
@@ -1281,6 +1261,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		row.type = 'button';
 		row.className = 'VRCWH-CHECK';
 		setClass(row, 'VRCWH-ON', checked);
+		row.setAttribute('aria-pressed', String(checked));
 
 		const box = document.createElement('span');
 		box.className = 'VRCWH-CHECK-BOX';
@@ -1304,6 +1285,8 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const buildPanel = () => {
 		const el = document.createElement('div');
 		el.className = 'VRCWH-PANEL';
+		el.setAttribute('role', 'dialog');
+		el.setAttribute('aria-label', 'Instance settings');
 
 		el.appendChild(sectionTitle('Select Instance Type'));
 		for (const type of INSTANCE_TYPES) {
@@ -1345,6 +1328,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const closePanel = () => {
 		panel?.remove();
 		panel = null;
+		launchFab?.setAttribute('aria-expanded', 'false');
 	};
 
 	const togglePanel = () => {
@@ -1355,12 +1339,12 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		panelSignature = JSON.stringify(launch);
 		panel = buildPanel();
 		document.body.appendChild(panel);
+		launchFab?.setAttribute('aria-expanded', 'true');
 		positionFab();
 	};
 
-	// Rebuilt in place so an open panel reflects a change immediately, but
-	// only when something it shows actually changed — applyAll runs on every
-	// DOM mutation, and rebuilding under the cursor would eat hover and focus.
+	// Rebuilt only when what it shows changed: applyAll runs on every DOM mutation,
+	// and a rebuild under the cursor would eat hover. Keyboard focus is carried over.
 	const refreshPanel = () => {
 		if (!panel) return;
 
@@ -1368,9 +1352,11 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		if (signature === panelSignature) return;
 		panelSignature = signature;
 
+		const focusAt = [...panel.querySelectorAll('button')].indexOf(document.activeElement);
 		const next = buildPanel();
 		panel.replaceWith(next);
 		panel = next;
+		if (focusAt > -1) next.querySelectorAll('button')[focusAt]?.focus();
 	};
 
 	const onDocumentClick = (event) => {
@@ -1388,6 +1374,9 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			launchFab.className = 'VRCWH-FAB';
 			launchFab.setAttribute('role', 'button');
 			launchFab.setAttribute('tabindex', '0');
+			launchFab.setAttribute('aria-label', 'Instance settings');
+			launchFab.setAttribute('aria-haspopup', 'dialog');
+			launchFab.setAttribute('aria-expanded', String(!!panel));
 
 			const icon = document.createElement('span');
 			icon.className = 'VRCWH-FAB-ICON';
@@ -1435,11 +1424,14 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 			`Hidden worlds: currently "${toggleState}" (${total} marked)\n` +
 				'Click to cycle normal -> dimmed -> hidden. Alt-click to un-hide everything.',
 		);
+		setAttr(
+			fab,
+			'aria-label',
+			`Hidden worlds: ${toggleState}, ${total} marked. Activate to cycle; Alt+Enter un-hides everything.`,
+		);
 
 		positionFab();
 	};
-
-	// ===========================================================
 
 	const applyAll = () => {
 		runAutoLaunch();
@@ -1454,8 +1446,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		logDebug('Running check for hidden worlds');
 		applyAll();
 	}, 250);
-
-	// ===========================================================
 
 	const observeDOM = (() => {
 		const MutationObserver =
@@ -1479,7 +1469,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		return (obj, callback) => {
 			logDebug('Attaching DOM listener');
 
-			// Invalid `obj` given
 			if (!obj) return;
 
 			if (MutationObserver) {
@@ -1500,8 +1489,6 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		};
 	})();
 
-	// ===========================================================
-
 	const start = async () => {
 		logDebug('Starting Script');
 
@@ -1521,7 +1508,10 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		window.addEventListener('resize', positionFab);
 		document.addEventListener('click', onDocumentClick, true);
 		document.addEventListener('keydown', (event) => {
-			if (event.key === 'Escape') closePanel();
+			if (event.key !== 'Escape' || !panel) return;
+			const inside = panel.contains(document.activeElement);
+			closePanel();
+			if (inside) launchFab?.focus();
 		});
 
 		// VRChat is a SPA: rows lazy-load on scroll and the content pane swaps
