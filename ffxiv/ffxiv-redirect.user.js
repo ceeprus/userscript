@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFXIV Language redirect
 // @namespace    FFXIV redirect
-// @version      1.1
+// @version      1.2
 // @description  Redirect any FFXIV website (DE, FR, EU, JP, etc.) to the NA version
 // @author       ceeprus
 // @match        https://*.finalfantasyxiv.com/*
@@ -15,9 +15,8 @@
 (function() {
     'use strict';
 
-    // Only these regional subdomains hop to NA. Everything else stays put:
-    // na itself, the apex domain (rewriting it to itself reload-looped),
-    // and non-regional hosts like store./forum./img.
+    // Only regional subdomains hop to NA. The apex (rewriting it reload-looped),
+    // na itself and store./forum./img. stay put.
     const REGIONAL = new Set(['de', 'fr', 'eu', 'jp']);
 
     const currentHost = window.location.hostname;
