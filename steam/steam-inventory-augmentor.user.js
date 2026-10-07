@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.1
+// @version      3.28.2
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -25,9 +25,7 @@
 	// page context (Steam globals, element expandos)
 	const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
-	// ------------------------------------------------------------------
 	// Config
-	// ------------------------------------------------------------------
 	const CONFIG = {
 		tf2Badges: true,       // paint dots, KS tier, unusual star, spells, festivized, series, gift
 		markUncraftable: true, // dashed outline on non-craftable TF2 items
@@ -36,21 +34,21 @@
 		gemify: true,          // one-click "Turn into Gems" (Steam Community items)
 		multiSell: true,       // "Sell Multiple" link for commodity items
 		sortButton: true,      // Sort dropdown (Default/Name/Type/Quality)
-		stacking: true,        // "Stack dupes" toggle — collapse identical items into one box with ×N
+		stacking: true,        // "Stack dupes" toggle: collapse identical items into one box with ×N
 		metalCounter: true,    // TF2 metal totals (ref/rec/scrap + total in ref, keys)
 		priceIndicator: true,  // market price bottom-right on marketable items
 		priceCooldownMs: 2500, // delay between price requests (Steam rate-limits hard)
 		priceCacheMins: 1440,  // how long a fetched price stays valid (24h)
 		tradeLockBadge: true,  // "6D" countdown on trade-locked items
 		shrinkRenameWarning: true, // smaller red "!" on renamed items
-		backpackTfKey: '',     // backpack.tf API key — set yours in the ⚙ settings panel
+		backpackTfKey: '',     // backpack.tf API key: set yours in the ⚙ settings panel
 		tradeMetalHelper: true, // "Add metal" amount box on trade offer pages
 		tradeEmptyButtons: true, // "Empty mine"/"Empty theirs" buttons on trade pages
 		shiftClickAdd: true,   // shift+click an inventory item on trade pages to add it
 		panelLinks: true,      // bp.tf + market icons on the selected-item panel
 		quicksellButtons: false, // ⚡ instant-sell/undercut listing buttons (own inventory)
 		showBuyOrders: false,  // green badge shows highest buy order (instant-sell value)
-		                       // instead of the lowest listing — doubles market requests
+		                       // instead of the lowest listing: doubles market requests
 		tradeCompare: true,    // live "Give ≈ X ref · Get ≈ Y ref" totals on trade pages
 		cheapPriceThreshold: 0.03, // at/below this, prices refresh on the slow cycle
 		cheapPriceCacheMins: 1440, // slow cycle: cheap items refresh once a day
@@ -82,9 +80,7 @@
 		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
 		'<path fill="#66C0F4" d="M1 1h2.5l.6 2H15l-1.8 7H4.9L3.2 3.6 2.7 2H1zM5.3 9h6.9l1-4H4.6zM6 12a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm7 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg>');
 
-	// ------------------------------------------------------------------
 	// Styles
-	// ------------------------------------------------------------------
 	const style = document.createElement('style');
 	style.textContent = `
 		.item { position: relative; }
@@ -119,6 +115,8 @@
 		#sia-bar button { background: rgba(103, 112, 123, .2); color: #d2d8de; border: 0;
 			border-radius: 2px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
 		#sia-bar button:hover { background: rgba(103, 112, 123, .45); color: #fff; }
+		#sia-bar button:focus-visible, #sia-bar select:focus-visible, #sia-bar input:focus-visible,
+		#sia-settings :focus-visible { outline: 2px solid #67c1f5; outline-offset: 1px; }
 		#sia-bar .sia-stack-on { background: #67c1f5; color: #16202d; }
 		#sia-bar .sia-stack-on:hover { background: #8ed1f8; color: #16202d; }
 		#sia-bptf-toggle { padding: 3px 6px; }
@@ -210,17 +208,14 @@
 	`;
 	document.head.appendChild(style);
 
-	// ------------------------------------------------------------------
 	// Item helpers
-	// ------------------------------------------------------------------
 
 	// Inventory page assets look like {assetid, classid, description: {...}};
 	// trade offer page items are old-style with descriptions/tags at top level.
 	const descOf = (item) => (item && (item.description || item)) || null;
 
-	// Steam's pages replace Object.values with a for..in shim while also
-	// polluting Array.prototype with ~35 enumerable methods — calling it on an
-	// engine asset ARRAY returns library functions as "assets". Own props only.
+	// Steam swaps Object.values for a for..in shim and adds ~35 enumerable methods to
+	// Array.prototype, so on an engine asset array it returns functions. Own props only.
 	function assetList(assets) {
 		const out = [];
 		if (!assets) return out;
@@ -334,7 +329,7 @@
 		if (CONFIG.markUntradable && info.untradable && lockDays <= 0) el.classList.add('sia-untrade');
 
 		// bp.tf ref value: own badge for unmarketable items, tooltip data otherwise;
-		// permanently untradable items don't need a value — they can't move anyway
+		// permanently untradable items don't need a value: they can't move anyway
 		if (bptf && !el.dataset.siaBptf && !el.querySelector('.sia-bptf') &&
 			!(info.untradable && lockDays <= 0) &&
 			!/^(Refined|Reclaimed|Scrap) Metal$/.test(d.name || '')) {
@@ -385,9 +380,7 @@
 		el.appendChild(wrap);
 	}
 
-	// ------------------------------------------------------------------
-	// backpack.tf pricing — daily dump reduced to name -> {quality+craft: refined}
-	// ------------------------------------------------------------------
+	// backpack.tf pricing: daily dump reduced to name -> {quality+craft: refined}
 	const BPTF_LS_KEY = 'siaBptf';
 	let bptf = null;
 	try { bptf = JSON.parse(localStorage.getItem(BPTF_LS_KEY)); } catch { /* fresh */ }
@@ -428,8 +421,8 @@
 		'Ghastly Ghosts': 3012,
 	};
 
-	// Steam's CSP blocks page-context fetches to other hosts; go through the
-	// a privileged request channel when available
+	// Steam's CSP blocks page-context fetches to other hosts; go through a
+	// privileged request channel when available
 	const gmFetchText = (url) => new Promise((resolve) => {
 		const gmReq = (typeof GM_xmlhttpRequest === 'function' && GM_xmlhttpRequest) ||
 			(typeof GM !== 'undefined' && GM.xmlHttpRequest);
@@ -501,7 +494,7 @@
 	}
 
 	// bp.tf keys items by schema base name: no "The", no quality/killstreak/
-	// festivized prefixes, no wear suffix — try progressively stripped candidates
+	// festivized prefixes, no wear suffix: try progressively stripped candidates
 	function bptfRecOf(d) {
 		if (!bptf?.items) return null;
 		const seen = new Set();
@@ -549,16 +542,14 @@
 		return (rv >= 100 ? Math.round(rv) : rv.toFixed(2)) + ' ref';
 	};
 
-	// ------------------------------------------------------------------
-	// Trade draft saver — your side survives a closed window
-	// ------------------------------------------------------------------
+	// Trade draft saver: your side survives a closed window
 	const tradePartnerKey = () =>
 		'siaDraft_' + ((new URLSearchParams(location.search)).get('partner') ||
 			String(location.pathname.match(/tradeoffer\/(\w+)/)?.[1] || 'x'));
 
 	function saveDraft() {
 		if (!CONFIG.draftSaver || !document.getElementById('trade_yours')) return;
-		// store app and context too — restoring must work even when a different
+		// store app and context too: restoring must work even when a different
 		// game tab is active in the trade window
 		const ids = [...document.querySelectorAll('#your_slots .item')]
 			.map((e) => e.rgItem &&
@@ -597,6 +588,7 @@
 		btn.type = 'button';
 		btn.textContent = `🕐${ids.length}`;
 		btn.title = `Restore draft: put your last ${ids.length} selected items back into the trade`;
+		btn.setAttribute('aria-label', btn.title);
 		btn.addEventListener('click', () => {
 			let moved = 0;
 			for (const id of ids) {
@@ -614,10 +606,8 @@
 		bar.appendChild(btn);
 	}
 
-	// ------------------------------------------------------------------
-	// Update checker — runs every page load (fetch throttled to 10 min);
+	// Update checker: runs every page load (fetch throttled to 10 min);
 	// the last known remote version shows a banner instantly
-	// ------------------------------------------------------------------
 	async function checkForUpdate() {
 		if (!CONFIG.updateURL) return;
 		const local = (typeof GM_info !== 'undefined' && GM_info.script?.version) || '0';
@@ -630,7 +620,7 @@
 			return 0;
 		};
 		const showBanner = (remote) => {
-			// the toolbar is usually still being built when this runs —
+			// the toolbar is usually still being built when this runs:
 			// retry attaching for a while instead of dropping the banner
 			let tries = 30;
 			const attach = () => {
@@ -657,18 +647,16 @@
 		const known = localStorage.getItem('siaRemoteVer');
 		if (known && cmp(known, local) > 0) showBanner(known);
 		const last = +localStorage.getItem('siaUpdateChecked') || 0;
-		if (Date.now() - last < 600e3) return; // fresh enough — skip the fetch
+		if (Date.now() - last < 600e3) return; // fresh enough: skip the fetch
 		const txt = await gmFetchText(CONFIG.updateURL);
 		const remote = txt?.match(/@version\s+([\d.]+)/)?.[1];
-		if (!remote) return; // fetch failed — no stamp, next load retries
+		if (!remote) return; // fetch failed: no stamp, next load retries
 		localStorage.setItem('siaUpdateChecked', String(Date.now()));
 		localStorage.setItem('siaRemoteVer', remote);
 		if (cmp(remote, local) > 0) showBanner(remote);
 	}
 
-	// ------------------------------------------------------------------
-	// Price indicator — per-item queue with cooldown, cached in localStorage
-	// ------------------------------------------------------------------
+	// Price indicator: per-item queue with cooldown, cached in localStorage
 	const PRICE_LS_KEY = 'siaPriceCache';
 	let priceCache = {};
 	try { priceCache = JSON.parse(localStorage.getItem(PRICE_LS_KEY)) || {}; } catch { /* fresh */ }
@@ -724,7 +712,7 @@
 		return (Date.now() - rec.t) < mins * 60000;
 	};
 
-	// after the main queue drains, quietly re-queue stale visible items —
+	// after the main queue drains, quietly re-queue stale visible items:
 	// oldest first, cheapest last
 	let lastStaleSweep = 0;
 	function refreshStalePrices() {
@@ -757,7 +745,7 @@
 			el.appendChild(span);
 		}
 		span.classList.remove('sia-pending');
-		// optionally show the highest buy order — the instant-sell value
+		// optionally show the highest buy order: the instant-sell value
 		if (CONFIG.showBuyOrders && rec.bo) {
 			text = fmtMoney(rec.bo, rec.lp || rec.mp || '$');
 		}
@@ -835,7 +823,7 @@
 			try {
 				// backfill-only job: price is fresh, just the buy order is missing
 				const cachedRec = priceCache[job.key];
-				// cheap junk doesn't need a buy-order request — mark checked
+				// cheap junk doesn't need a buy-order request: mark checked
 				if (CONFIG.showBuyOrders && cachedRec && cachedRec.bo == null) {
 					const n0 = parsePrice(cachedRec.lp || cachedRec.mp);
 					if (!Number.isNaN(n0) && n0 <= CONFIG.cheapPriceThreshold) cachedRec.bo = 0;
@@ -860,7 +848,7 @@
 					priceQueue.unshift(job); // rate limited: retry after a minute
 					priceBackoffUntil = Date.now() + 60000;
 					// nothing mutates the page during the wait, so the countdown
-					// would freeze — tick a scan every few seconds to redraw it
+					// would freeze: tick a scan every few seconds to redraw it
 					for (let w = 0; w < 12; w++) {
 						await sleep(5000);
 						queueScan();
@@ -872,7 +860,7 @@
 				// cache misses too (success:false = not on market) so we don't refetch them
 				const rec = { lp: j?.lowest_price || null, mp: j?.median_price || null, t: Date.now() };
 				// buy-order mode: one extra order-book request per item, same pacing;
-				// cheap junk skips it — its buy order is a cent anyway
+				// cheap junk skips it: its buy order is a cent anyway
 				if (CONFIG.showBuyOrders && (rec.lp || rec.mp)) {
 					const n1 = parsePrice(rec.lp || rec.mp);
 					if (!Number.isNaN(n1) && n1 <= CONFIG.cheapPriceThreshold) {
@@ -902,7 +890,7 @@
 			await sleep(CONFIG.priceCooldownMs);
 		}
 		} finally {
-			// whatever happens, the pump must be restartable — a stuck flag
+			// whatever happens, the pump must be restartable: a stuck flag
 			// freezes the queue and the progress bar forever
 			pricePumpRunning = false;
 			priceCurrentJob = null;
@@ -923,9 +911,7 @@
 		if (key === 'price' && !document.hidden) runLayout();
 	}
 
-	// ------------------------------------------------------------------
-	// Scanner — covers inventory pages and both sides of trade offers
-	// ------------------------------------------------------------------
+	// Scanner: covers inventory pages and both sides of trade offers
 	function iconLink(href, src, title) {
 		const a = document.createElement('a');
 		a.href = href;
@@ -999,10 +985,8 @@
 		}
 	}
 
-	// ------------------------------------------------------------------
-	// Quicksell — list at instant-sell (highest buy order)
+	// Quicksell: list at instant-sell (highest buy order)
 	// or undercut (lowest listing − 0.01). Own inventory, logged in only.
-	// ------------------------------------------------------------------
 	const canQuicksell = (d) =>
 		CONFIG.quicksellButtons && W.g_sessionID && d.marketable && d.market_hash_name &&
 		!document.getElementById('trade_yours') &&
@@ -1109,7 +1093,7 @@
 	}
 
 	// when items move in/out of trade slots while stacking is on, the stacked
-	// layout goes stale (copies reappear unmerged) — re-apply it
+	// layout goes stale (copies reappear unmerged): re-apply it
 	let lastSlotSig = '';
 	function checkTradeSlots() {
 		if (!document.getElementById('trade_yours')) return;
@@ -1142,9 +1126,8 @@
 		priceQueue.sort((a, b) => (visible.has(b.key) ? 1 : 0) - (visible.has(a.key) ? 1 : 0));
 	}
 
-	// stacking artifacts (×N badges, hidden holders, stashed engine arrays) must
-	// never survive with the toggle off — tab switches on trade pages can race
-	// the normal cleanup, so self-heal on every scan
+	// stacking leftovers (×N badges, hidden holders, stashed arrays) must not outlive the
+	// toggle; trade-page tab switches can race the cleanup, so heal on every scan
 	function healStackState() {
 		if (stackOn) return;
 		const leftovers = document.querySelector('.sia-count, .sia-stacked-holder');
@@ -1166,7 +1149,7 @@
 	}
 
 	let scanQueued = false;
-	// price every sellable asset, not just the ones with rendered elements —
+	// price every sellable asset, not just the ones with rendered elements:
 	// off-page items may never touch the DOM on the responsive engine
 	function queueMissingPrices() {
 		if (!CONFIG.priceIndicator) return;
@@ -1182,9 +1165,8 @@
 		if (added) pumpPrices();
 	}
 
-	// totals need every asset, but Steam only loads inventory pages on demand;
-	// request the rest once per inventory (opening the advanced filters used
-	// to be the accidental way to trigger this load)
+	// totals need every asset, but Steam loads inventory pages on demand: request
+	// the rest once per inventory (the advanced filters used to trigger it by accident)
 	function ensureFullLoad() {
 		if (!CONFIG.priceIndicator && !CONFIG.metalCounter) return;
 		if (!document.getElementById('tabcontent_inventory')) return; // inventory pages only
@@ -1260,9 +1242,7 @@
 		}, true);
 	}
 
-	// ------------------------------------------------------------------
 	// Toolbar: sort, stack dupes, metal counter
-	// ------------------------------------------------------------------
 	const QUALITY_ORDER = ['Unusual', "Collector's", 'Decorated Weapon', 'Haunted', 'Strange',
 		'Vintage', 'Genuine', 'Self-Made', 'Community', 'Valve', 'Unique', 'Normal'];
 
@@ -1277,7 +1257,7 @@
 	const itemsOf = (invEl) => [...invEl.querySelectorAll('.inventory_page .itemHolder > .item')]
 		.filter((el) => el.rgItem);
 
-	// asset ids are numeric strings too large to trust as floats — compare by
+	// asset ids are numeric strings too large to trust as floats: compare by
 	// length first, then lexicographically
 	const idCmp = (x, y) => (x.length - y.length) || (x < y ? -1 : x > y ? 1 : 0);
 
@@ -1310,9 +1290,8 @@
 		return -1;
 	}
 
-	// per-description caches: these run over whole inventories every card tick,
-	// and the underlying regex/lookup work never changes until bp.tf or the key
-	// rate refreshes (valEpoch) — cache aggressively
+	// per-description caches: whole inventories go through these every card tick, and
+	// the result only changes when bp.tf or the key rate refreshes (valEpoch)
 	let valEpoch = 0;
 	const refValCache = new WeakMap();
 	function refValueCached(d) {
@@ -1412,7 +1391,7 @@
 		if (!inv._siaOrig || inv._siaOrig.length !== inv.m_rgItemElements.length) {
 			inv._siaOrig = inv.m_rgItemElements.slice();
 		}
-		// badge clearing is global — in the multi-context loop the caller clears
+		// badge clearing is global: in the multi-context loop the caller clears
 		// once up front, or each child would wipe the previous child's badges
 		if (!deferLayout) clearStackBadges();
 
@@ -1528,14 +1507,14 @@
 
 		const visible = ordered.filter((h) => !h.filtered && h.style.display !== 'none').length;
 		inv.pageTotal = Math.max(1, Math.ceil(visible / per));
-		// only the current page may stay visible — a stray visible page full of
+		// only the current page may stay visible: a stray visible page full of
 		// hidden holders otherwise stretches the inventory box to double height
 		const cur = inv.pageCurrent < inv.pageTotal ? inv.pageCurrent : 0;
 		pages.forEach((p, i) => { p.style.display = i === cur ? '' : 'none'; });
 		if (inv.pageCurrent >= inv.pageTotal) inv.SetActivePage?.(0);
 		else inv.UpdatePageCounts?.();
 		// items pulled in from never-visited pages have no image yet, and Steam's
-		// per-page images_loaded flag would skip them — force a reload
+		// per-page images_loaded flag would skip them: force a reload
 		pages.forEach((p) => { p.images_loaded = false; });
 		try { inv.LoadPageImages?.(pages[cur]); } catch { /* legacy only */ }
 		refilter();
@@ -1585,10 +1564,8 @@
 	function applyFor(inv, sortKey, stack) {
 		if (inv && Array.isArray(inv.m_rgItemElements) && typeof inv.LayoutPages === 'function') {
 			if (inv.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) {
-				// multi-context "all" view: NEVER touch its engine arrays — its
-				// pages are rebuilt from child element lists under strict
-				// index/count invariants, and reordering them orphans the real
-				// item elements (blank inventory). Reorder the rendered DOM only.
+				// multi-context "all" view: never touch its engine arrays. Its pages are rebuilt
+				// under strict index/count invariants; reordering blanks the inventory.
 				const invEl = getActiveInvEl();
 				if (invEl) applyDom(invEl, sortKey, stack);
 				return;
@@ -1616,9 +1593,8 @@
 	}
 	wrapMatchItem();
 
-	// descriptions of everything in the active inventory: engine assets when
-	// loaded, child-context assets for the multi-context "all" view (its own
-	// asset map stays empty), rendered item elements as the last resort
+	// descriptions of the active inventory: engine assets, else child-context assets
+	// (the "all" view's own map stays empty), else rendered item elements
 	function activeDescs() {
 		const inv = W.g_ActiveInventory;
 		const out = [];
@@ -1647,7 +1623,7 @@
 		for (const d of activeDescs()) {
 			if (!d) continue;
 			if (String(d.appid) === '440') c.is440 = true;
-			// permanently untradable metal can't be traded — don't count it
+			// permanently untradable metal can't be traded: don't count it
 			// (trade-locked with a countdown still counts)
 			if ((d.tradable === 0 || d.tradable === false) && lockDaysCached(d) <= 0) continue;
 			const n = d.market_hash_name || d.name;
@@ -1679,7 +1655,7 @@
 		}
 	}
 
-	// gear-button settings UI — writes overrides to localStorage, reload applies
+	// gear-button settings UI: writes overrides to localStorage, reload applies
 	const SETTINGS_SCHEMA = [
 		['Item badges', null, 'header'],
 		['tf2Badges', 'TF2 badges (KS, unusual, spells…)'],
@@ -1784,7 +1760,7 @@
 			input.addEventListener('change', () => {
 				if (type === 'number') {
 					const n = Number(input.value);
-					// empty or garbage would save 0 (a zero cooldown hammers Steam) — keep the old value
+					// empty or garbage would save 0 (a zero cooldown hammers Steam): keep the old value
 					if (input.value.trim() === '' || !Number.isFinite(n) || n <= 0) {
 						input.value = String(CONFIG[key] ?? '');
 						return;
@@ -1811,6 +1787,12 @@
 		panel.style.left = `${Math.round(r.left + scrollX)}px`;
 		panel.style.top = `${Math.round(r.bottom + scrollY + 4)}px`;
 		document.body.appendChild(panel);
+		panel.addEventListener('keydown', (e) => {
+			if (e.key !== 'Escape') return;
+			panel.remove();
+			anchorBtn.focus();
+		});
+		panel.querySelector('input')?.focus();
 	}
 
 	function ensureBar() {
@@ -1837,7 +1819,7 @@
 				? `<button id="sia-bptf-toggle" type="button" title="Toggle bp.tf values">` +
 					`<img src="${BPTF_ICON}" alt="bp.tf"></button>`
 				: '') +
-			(CONFIG.settingsPanel ? '<button id="sia-gear" type="button" title="SIA settings">⚙</button>' : '');
+			(CONFIG.settingsPanel ? '<button id="sia-gear" type="button" title="SIA settings" aria-label="SIA settings">⚙</button>' : '');
 		anchor.parentElement.insertBefore(bar, anchor);
 
 		const sel = bar.querySelector('#sia-sort');
@@ -1874,9 +1856,7 @@
 		ensureDraftButton(bar);
 	}
 
-	// ------------------------------------------------------------------
 	// Trade helper: add an exact metal amount to your side ("5.33" -> ref+rec+scrap)
-	// ------------------------------------------------------------------
 	function parseRefAmount(s) {
 		const m = String(s).trim().match(/^(\d+)(?:[.,]([0-8])\2?)?$/);
 		if (!m) return NaN;
@@ -1912,13 +1892,13 @@
 		if (need > 0) {
 			const r = need % 9;
 			(W.ShowAlertDialog || ((t, m) => alert(m)))('Add metal',
-				`Short by ${Math.floor(need / 9)}.${r}${r} ref — not enough small metal to make the exact amount.`);
+				`Short by ${Math.floor(need / 9)}.${r}${r} ref: not enough small metal to make the exact amount.`);
 		}
 	}
 
 	function emptyTradeSide(slotsId) {
 		document.querySelectorAll(`#${slotsId} .itemHolder .item`).forEach((el) => {
-			// currency stacks have their own remove flow — RemoveItemFromTrade
+			// currency stacks have their own remove flow: RemoveItemFromTrade
 			// doesn't cover them and would desync the offer
 			if (el.rgItem && !el.rgItem.is_currency) {
 				try { W.GTradeStateManager?.RemoveItemFromTrade?.(el.rgItem); } catch { /* read-only */ }
@@ -1966,7 +1946,7 @@
 			if (v > 0) total += v;
 		}
 		total = Math.round(total);
-		// only freeze the number once their inventory is fully loaded — caching a
+		// only freeze the number once their inventory is fully loaded: caching a
 		// half-loaded backpack would understate them for the whole trade
 		if (typeof inv.BIsFullyLoaded !== 'function' || inv.BIsFullyLoaded()) {
 			partnerValues.set(W.UserThem, total);
@@ -2002,7 +1982,7 @@
 	// repair slot images Steam leaves broken after rapid moves
 	function fixSlotImages() {
 		// a grouped representative carries its ×N badge along when moved into a
-		// slot — one offered item must not read "×5"
+		// slot: one offered item must not read "×5"
 		for (const b of document.querySelectorAll('#your_slots .sia-count, #their_slots .sia-count')) {
 			b.remove();
 		}
@@ -2077,7 +2057,7 @@
 			return span;
 		};
 
-		// build off-DOM and only write on change — a rebuild every tick flickers
+		// build off-DOM and only write on change: a rebuild every tick flickers
 		// and feeds the mutation observer its own updates
 		const setContent = (el, tmp) => {
 			const h = tmp.innerHTML;
@@ -2140,7 +2120,7 @@
 			.filter((p) => p.style.display !== 'none');
 		for (const p of pages) {
 			for (const el of p.querySelectorAll('.itemHolder .item')) {
-				// stackable items (gem-style) open an amount dialog per move —
+				// stackable items (gem-style) open an amount dialog per move:
 				// a batch add would fire a dialog storm; leave them to manual adds
 				if (el.rgItem && !el.rgItem.is_stackable && el.offsetParent !== null) {
 					moveToTradeSafe(el);
@@ -2151,7 +2131,7 @@
 	}
 
 	// the trade screen only loads tradable items; an untradable copy at home
-	// still counts as "the one you keep" — learn which items have one
+	// still counts as "the one you keep": learn which items have one
 	let untradableKeys = null;
 	async function loadUntradableKeys() {
 		if (untradableKeys || !W.g_steamID) return;
@@ -2194,7 +2174,7 @@
 		for (const a of assets) {
 			if (!a || !a.element || a.is_stackable || inTrade.has(a.id || a.assetid)) continue;
 			const d = descOf(a) || {};
-			if (METAL_REF[d.name]) continue; // metal is currency — use "Add metal" instead
+			if (METAL_REF[d.name]) continue; // metal is currency: use "Add metal" instead
 			const k = stackKeyOf(a);
 			if (!groups.has(k)) groups.set(k, []);
 			groups.get(k).push(a);
@@ -2279,7 +2259,7 @@
 
 	let priceBatchTotal = 0; // high-water mark of the current pricing batch
 
-	// pricing progress note with live hover queue — shared by the value card
+	// pricing progress note with live hover queue: shared by the value card
 	// (inventory) and the toolbar (trade pages)
 	function buildPricingNote() {
 		if (!priceQueue.length && !priceCurrentJob) {
@@ -2326,7 +2306,7 @@
 				const key = document.getElementById('sia-sort')?.value || 'default';
 				try {
 					// the multi-context view is grouped DOM-only, in its own
-					// container — restore that, not the newly visible one
+					// container: restore that, not the newly visible one
 					if (prev && prev.m_contextid === (W.APPWIDE_CONTEXT ?? 0)) {
 						if (prevEl) applyDom(prevEl, key, false);
 					} else if (prev) {
@@ -2336,9 +2316,8 @@
 			}
 		}
 
-		// a remembered sort choice must actually apply to whatever inventory
-		// loads or gets switched to — it used to apply only when the dropdown
-		// itself was changed, so "Price" looked selected but did nothing
+		// apply a remembered sort to whatever inventory loads or is switched to; it used to
+		// apply only on a dropdown change, so "Price" looked selected but did nothing
 		const sortSel = document.getElementById('sia-sort');
 		if (sortSel && sortSel.value !== 'default' && inv && !inv._siaSorted) {
 			inv._siaSorted = 1;
@@ -2353,13 +2332,13 @@
 				if (b) b.style.display = show ? '' : 'none';
 			};
 			setVis('sia-give-dupes', !theirs);
-			// metal box works on whichever TF2 inventory is open — theirs included
+			// metal box works on whichever TF2 inventory is open: theirs included
 			const activeTf2 = String(W.g_ActiveInventory?.m_appid ?? W.g_ActiveInventory?.appid ?? '') === '440';
 			setVis('sia-metal-amount', activeTf2);
 			setVis('sia-metal-add', activeTf2);
 			setVis('sia-give-robot', !theirs && activeTf2);
 
-			// pricing progress lives in the toolbar here — no value card on trades
+			// pricing progress lives in the toolbar here: no value card on trades
 			const bar2 = document.getElementById('sia-bar');
 			if (bar2) {
 				let note = document.getElementById('sia-bar-note');
@@ -2429,9 +2408,8 @@
 			const descs = activeDescs();
 			let sum = 0, priced = 0, marketable = 0, sample = '';
 			for (const d of descs) {
-				// marketable (or on a temporary hold) = sellable = has value;
-				// tradability doesn't matter here — market-protected items
-				// (CS2) are untradable yet still sellable
+				// marketable (or on a temporary hold) = sellable = has value; tradability is
+				// irrelevant: market-protected CS2 items are untradable yet sellable
 				if (!priceable(d)) continue;
 				marketable++;
 				const rec = priceCache[`${d.appid}||${d.market_hash_name}`];
@@ -2450,14 +2428,13 @@
 				}
 			}
 
-			// tradable worth: bp.tf values of everything you can actually trade away
-			// (marketable or not — bp.tf trading covers it); perm-untradables excluded.
-			// TF2 only — ref values mean nothing for gems or CS2 skins
+			// tradable worth: bp.tf value of everything you can trade away, marketable or not.
+			// TF2 only: ref values mean nothing for gems or CS2 skins
 			const activeIs440 = String(inv2?.m_appid ?? inv2?.appid ?? '') === '440' ||
 				!!document.querySelector('#inventories .inventory_ctn[id*="_440_"]:not([style*="display: none"])');
 			if (!CONFIG.backpackTfKey && activeIs440) {
 				parts.push('<div class="sia-vc-sub"><a href="https://backpack.tf/developer" target="_blank" rel="noopener" ' +
-					'style="color:#E8A33D">bp.tf values off — add your free API key in ⚙</a></div>');
+					'style="color:#E8A33D">bp.tf values off: add your free API key in ⚙</a></div>');
 			}
 			if (bptf && bptfShow && activeIs440) {
 				let tradRef = 0, tradCount = 0;
@@ -2492,15 +2469,13 @@
 		}
 	}
 
-	// ------------------------------------------------------------------
 	// Duplicate tag filter (inventory pages only)
-	// ------------------------------------------------------------------
 	if (CONFIG.duplicateFilter && W.CInventory && W.Filter) {
 		const belongsTo = (inv, item) =>
 			item.appid == inv.appid && (inv.contextid == 0 || item.contextid == inv.contextid);
 
 		const fromInventory = (inv, item) => {
-			if (!inv) return null; // unknown context — never break Steam's filter
+			if (!inv) return null; // unknown context: never break Steam's filter
 			return inv.contextid == item.contextid
 				? (inv.m_rgAssets || {})[item.assetid]
 				: fromInventory((inv.m_rgChildInventories || {})[item.contextid], item);
@@ -2561,7 +2536,7 @@
 				belongsTo(W.g_ActiveInventory, elItem.rgItem)) {
 				const inv = W.g_ActiveInventory;
 				// stacking state lives on the child inventory in the multi-context
-				// "all" view — look it up on whichever inventory owns the item
+				// "all" view: look it up on whichever inventory owns the item
 				const owner = inv.contextid == elItem.rgItem.contextid ? inv
 					: (inv.m_rgChildInventories || {})[elItem.rgItem.contextid] || inv;
 				const counts = v2StackCounts.get(owner);
@@ -2578,9 +2553,7 @@
 		};
 	}
 
-	// ------------------------------------------------------------------
 	// One-click gemify (Steam Community items, appid 753)
-	// ------------------------------------------------------------------
 	if (CONFIG.gemify && W.g_strProfileURL) {
 		const fail = (msg) =>
 			(W.ShowAlertDialog || ((t, m) => alert(m)))(
@@ -2621,9 +2594,7 @@
 		};
 	}
 
-	// ------------------------------------------------------------------
 	// Multi-sell links (inventory pages only)
-	// ------------------------------------------------------------------
 	if (CONFIG.multiSell && W.PopulateMarketActions) {
 		const origPopulate = W.PopulateMarketActions;
 		W.PopulateMarketActions = function (elActions, item, ...rest) {
