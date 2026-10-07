@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.16
+// @version      1.17
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -99,8 +99,7 @@
     return KEYS[0];
   }
 
-  // ---------------------------------------------------------------- storage
-
+  // Storage
   function store(key, val) {
     try { if (typeof GM_setValue === 'function') { GM_setValue(key, val); return; } } catch (e) { /* fall through */ }
     try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* quota / private mode */ }
@@ -160,8 +159,7 @@
     store(HIDE_KEY, state.hidden);
   }
 
-  // ---- blacklist: substring terms that hide any project whose name matches --
-
+  // Blacklist: substring terms that hide any project whose name matches
   function loadBlock() {
     var b = load(BLOCK_KEY, []);
     return Array.isArray(b) ? b.filter(function (t) { return typeof t === 'string' && t; }) : [];
@@ -190,8 +188,7 @@
     return true;
   }
 
-  // ---- modlist: paste a whole mod list, hide every entry it names ----------
-
+  // Modlist: paste a whole mod list, hide every entry it names
   function normName(s) {
     s = String(s || '');
     // fold fullwidth/compat forms so visually-identical names compare equal
@@ -205,12 +202,8 @@
     return normName(String(s || '').split(/\s+\(|\s+\[/)[0]);
   }
 
-  // CurseForge and Modrinth title the same mod differently: "Architectury"
-  // vs "Architectury API", "Iris" vs "Iris Shaders", "CosmeticArmorReworked"
-  // vs "Cosmetic Armor Reworked". The canonical key drops filler words and
-  // whitespace so those all land on one key. Loader names and bare integers
-  // stay significant - "Sodium Fabric"/"Sodium Forge" and "Mod 1"/"Mod 3"
-  // are genuinely different projects.
+  // CurseForge and Modrinth name mods differently ("Iris" / "Iris Shaders"): the key drops
+  // filler words and spaces, but loader names and bare integers ("Mod 1"/"Mod 3") stay.
   function canonKey(s) {
     var toks = baseName(s).split(/[^a-z0-9+]+/);
     var out = [];
@@ -224,9 +217,8 @@
     return out.join('');
   }
 
-  // Launchers and CurseForge suffix names differently than Modrinth
-  // ("GeckoLib 4" vs "Geckolib"). Both sides also compare with trailing
-  // edition markers and version numbers stripped.
+  // Launchers suffix names differently ("GeckoLib 4" vs "Geckolib"), so both sides
+  // also compare with trailing edition markers and version numbers stripped.
   function strippedName(s) {
     var n = baseName(s);
     var prev = '';
@@ -298,9 +290,8 @@
     resolveModlist();
   }
 
-  // A line's URL can carry a project ID (laX5CckD) instead of a slug; cards
-  // only expose slugs. Resolve ids through the API once (cached 6h) and fold
-  // the resolved slug and title into the match sets.
+  // A line's URL can carry a project ID instead of a slug, and cards only expose slugs:
+  // resolve ids through the API once (cached 6h) and add the slug and title to the sets.
   function resolveModlist() {
     var ml = state.modlist;
     // fetch with the original casing - the API rejects a lowercased ID
@@ -323,9 +314,8 @@
     resolveCf();
   }
 
-  // CurseForge slugs that the bulk endpoint could not resolve as Modrinth
-  // slugs go through the search API once each, accepted only on a strict
-  // name/slug match. Results are cached so each CF link costs one search ever.
+  // CurseForge slugs the bulk endpoint can't resolve go through search once each,
+  // accepted only on a strict name/slug match, and cached.
   function resolveCf() {
     var ml = state.modlist;
     var cfSlugs = Object.keys(ml.cf || {});
@@ -429,8 +419,7 @@
 
   function hiddenCount() { return counts().total; }
 
-  // ---- starred: pinned to the top of whatever list they appear in ----------
-
+  // Starred: pinned to the top of whatever list they appear in
   function loadStars() {
     var s = load(STAR_KEY, {});
     return (s && typeof s === 'object') ? s : {};
@@ -449,8 +438,7 @@
     return state.list.cards.some(function (c) { return isStarred(c.slug) && !cardHidden(c); });
   }
 
-  // ---- download range (log-scale slider positions) -------------------------
-
+  // Download range (log-scale slider positions)
   function posToCount(p) { return p <= 0 ? 0 : Math.round(Math.pow(10, p / 10)); }
 
   function countToPos(n) {
@@ -484,8 +472,7 @@
     return true;
   }
 
-  // ------------------------------------------------------------------- data
-
+  // Data
   function trim(p) {
     return {
       id: p.id,
@@ -531,9 +518,8 @@
     return best;
   }
 
-  // Bulk endpoint takes slugs and ids mixed, is CORS-open and needs no auth.
-  // Response order is NOT request order, and a renamed project can come back
-  // under a different slug, so everything is indexed by both slug and id.
+  // Bulk endpoint: slugs and ids mixed, CORS-open, no auth. Responses come back out of
+  // order and renamed projects under a new slug, so results are indexed by slug and id.
   function fetchData(slugs) {
     var cache = loadCache();
     var now = Date.now();
@@ -580,8 +566,7 @@
     });
   }
 
-  // ------------------------------------------------------------ list finding
-
+  // List finding
   function slugOf(a) {
     var u;
     try { u = new URL(a.getAttribute('href'), location.origin); } catch (e) { return null; }
@@ -643,8 +628,7 @@
     return { container: best.container, cards: cards };
   }
 
-  // --------------------------------------------------------------- ordering
-
+  // Ordering
   // Cards are never moved. The container is a flex column, so a CSS `order`
   // stamp reorders visually while Vue's keyed DOM stays exactly as it was.
   function canUseOrder(container) {
@@ -704,8 +688,7 @@
     return entries;
   }
 
-  // ------------------------------------------------------------------ pages
-
+  // Pages
   function pageKind() {
     var p = location.pathname;
     // a project's own page is never a list, so nothing is attached there
@@ -730,26 +713,24 @@
     location.href = u.toString();
   }
 
-  // --------------------------------------------------------------------- UI
-
+  // UI
   var CSS = [
-    // Custom tags: Vue's hydration adopts a foreign element when the tag at a
-    // child index matches its vnode. No Modrinth vnode is ever an <mrsort-*>
-    // tag, so these elements can never be adopted.
+    // Custom tags: Vue hydration adopts a foreign element whose tag matches its vnode,
+    // and no Modrinth vnode is an <mrsort-*> tag.
     'mrsort-bar,mrsort-card,mrsort-sentinel-box{display:block}',
     'mrsort-pill-box{display:inline-block}',
     // the site resets radios/checkboxes to appearance:none and width:0
     '.mrsort input[type=checkbox],.mrsort input[type=radio],.mrsort-side-body input[type=checkbox],.mrsort-side-body input[type=radio]{appearance:auto!important;-webkit-appearance:auto!important;width:1rem!important;height:1rem!important;margin:0;accent-color:var(--color-brand,#1bd96a);cursor:pointer}',
     'mrsort-tip{display:none;position:absolute;z-index:9999;min-width:180px;max-width:260px;background:var(--color-raised-bg,#27292e);color:var(--color-base,#b0bac5);border:1px solid var(--color-button-bg,#34363c);border-radius:.75rem;padding:.5rem .75rem;font-size:.8125rem;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.35)}',
     '.mrsort-tip-head{font-weight:600;color:var(--color-contrast,#fff)}',
-    '.mrsort-depbtn{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease}',
+    '.mrsort-depbtn{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.75;pointer-events:auto;transition:opacity .12s ease}',
     '.mrsort-depbtn:hover{opacity:1;color:var(--color-brand,#1bd96a)}',
     '.mrsort-depbtn svg{pointer-events:none}',
     '.mrsort-owned{display:inline-flex;align-items:center;justify-content:center;width:1.15rem;height:1.15rem;border-radius:9999px;background:var(--color-brand,#1bd96a);color:var(--color-accent-contrast,#04180f);font-size:.75rem;font-weight:700;pointer-events:none}',
     '.mrsort-mlmodes label{display:flex;align-items:center;gap:.25rem;font-size:.8125rem;cursor:pointer}',
     // outside the download range = gone, not dimmed
     '.mrsort-card-range{display:none!important}',
-    '.mrsort-star{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease,color .12s ease}',
+    '.mrsort-star{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.75;pointer-events:auto;transition:opacity .12s ease,color .12s ease}',
     '.mrsort-star:hover{opacity:1;color:var(--color-orange,#ffa347)}',
     '.mrsort-star[data-on="1"]{opacity:1;color:var(--color-orange,#ffa347)}',
     '.mrsort-star[data-on="1"] svg{fill:currentColor}',
@@ -804,7 +785,7 @@
     '.mrsort .mrsort-status{margin-left:auto;color:var(--color-secondary,#96a2b0);font-size:.8125rem}',
     '.mrsort .mrsort-status[data-warn="1"]{color:var(--color-orange,#e5a44d)}',
     // card contents sit under a full-card overlay link, so the button opts back into pointer events
-    '.mrsort-hide{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.5;pointer-events:auto;transition:opacity .12s ease,color .12s ease}',
+    '.mrsort-hide{background:none;border:0;margin:0;padding:.15rem;line-height:0;color:var(--color-secondary,#96a2b0);cursor:pointer;opacity:.75;pointer-events:auto;transition:opacity .12s ease,color .12s ease}',
     '.mrsort-hide:hover{opacity:1;color:var(--color-red,#e77373)}',
     // the icon never takes the press: a mousedown target that gets replaced
     // mid-click makes Chrome drop the click entirely
@@ -841,6 +822,10 @@
     '.mrsort-sentinel:hover{filter:brightness(115%)}',
     '.mrsort-sentinel:empty{background:none;padding:.75rem 0;min-height:1.25rem}',
     '.mrsort-card-hidden{display:none!important}',
+    // the filter box and modlist set outline:none on their inputs; the ring goes here instead
+    '.mrsort-filter:focus-within{outline:2px solid var(--color-brand,#1bd96a);outline-offset:1px}',
+    '.mrsort-modlist-input:focus{border-color:var(--color-brand,#1bd96a)}',
+    '.mrsort-hide:focus-visible,.mrsort-star:focus-visible,.mrsort-depbtn:focus-visible,.mrsort-pill:focus-visible,.mrsort-sentinel:focus-visible,.mrsort .mrsort-chip-x:focus-visible{opacity:1;outline:2px solid var(--color-brand,#1bd96a);outline-offset:1px}',
     '.mrsort-card-dim{opacity:.4}',
     '.mrsort-card-dim .mrsort-hide{opacity:1;color:var(--color-brand,#1bd96a)}'
   ].join('\n');
@@ -1168,8 +1153,7 @@
     }
   }
 
-  // ---- export / backup -----------------------------------------------------
-
+  // Export / backup
   function downloadText(name, text, mime) {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([text], { type: mime || 'text/plain' }));
@@ -1237,9 +1221,8 @@
     reader.readAsText(file);
   }
 
-  // Same row pattern as the site's own "Exclude plugins" toggle: label text
-  // left, switch right. A native checkbox here inherits the site's input
-  // sizing and renders warped.
+  // Same row as the site's "Exclude plugins" toggle; a native checkbox here inherits the
+  // site's input sizing and renders warped.
   function buildOnlyHidden() {
     if (state.onlyEl) return state.onlyEl;
     var wrap = document.createElement('div');
@@ -1285,6 +1268,7 @@
 
     var head = document.createElement('button');
     head.type = 'button';
+    head.setAttribute('aria-expanded', 'true');
     head.className = 'button-animation flex flex-col gap-1 px-4 py-3 w-full bg-transparent cursor-pointer border-none';
     var row = document.createElement('div');
     row.className = 'flex items-center gap-1 w-full text-contrast';
@@ -1315,6 +1299,7 @@
     head.addEventListener('click', function () {
       var open = body.style.display !== 'none';
       body.style.display = open ? 'none' : '';
+      head.setAttribute('aria-expanded', String(!open));
       chev.setAttribute('class', chev.getAttribute('class').replace(' rotate-180', '') + (open ? '' : ' rotate-180'));
     });
 
@@ -1395,11 +1380,8 @@
     });
   }
 
-  // Version dropdown fills from the versions the current cards actually
-  // declare (release-shaped only), so it never lists snapshots or versions
-  // nothing on the page supports. Rebuilt only when that set changes.
-  // Dual-thumb download range on a log scale, "price range" style. Lives in
-  // the filter sidebar as its own card, falling back into the bar elsewhere.
+  // Dual-thumb download range on a log scale. Lives in the filter sidebar as its own
+  // card, falling back into the bar elsewhere.
   function buildRange() {
     if (state.rangeEl) return state.rangeEl;
     var range = document.createElement('div');
@@ -1545,10 +1527,8 @@
     if (warn) el.setAttribute('data-warn', '1'); else el.removeAttribute('data-warn');
   }
 
-  // If Vue ever adopted one of our elements (hydration got there after we
-  // inserted, on a page saved mid-load, etc.) its children are no longer ours.
-  // Surrender the element - strip our identity so our CSS stops applying and
-  // findList can treat it as the list it now is - and rebuild fresh.
+  // An element Vue adopted (hydration landed after we inserted) is no longer ours:
+  // strip our identity so findList can treat it as the list it now is, and rebuild.
   function healStomped() {
     if (state.bar && (!state.bar.querySelector('.mrsort-key') || state.bar.querySelector('.project-card-title'))) {
       state.bar.classList.remove('mrsort');
@@ -1584,11 +1564,9 @@
     paintBar();
   }
 
-  // ----------------------------------------------------------- card buttons
-
-  // The follower heart is the anchor: its chip's parent row is the little
-  // stat strip at the card's top right. Appending lands after the Vue
-  // fragment's closing anchor, so Vue's own diff is untouched.
+  // Card buttons
+  // The follower heart's row is the stat strip at the card's top right. Appending lands
+  // after the Vue fragment's closing anchor, so Vue's diff is untouched.
   function actionRow(cardEl) {
     var svgs = cardEl.querySelectorAll('svg path');
     for (var i = 0; i < svgs.length; i++) {
@@ -1613,10 +1591,8 @@
         btn.className = 'mrsort-hide';
         // Tailwind opt-in that re-enables clicks inside the overlay-linked card
         btn.classList.add('smart-clickable:allow-pointer-events');
-        // Read the slug off the button at click time. Binding it in this
-        // closure would keep pointing at whatever project the card held when
-        // the button was built, which breaks the moment a card element is
-        // reused for a different project.
+        // Slug read at click time: a card element can be reused for another project,
+        // and a closure would keep the old one.
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
@@ -1664,6 +1640,7 @@
         dbtn.appendChild(icon(ICON.deps));
         dbtn.addEventListener('mouseenter', function () { depsShow(dbtn); });
         dbtn.addEventListener('mouseleave', depsHideSoon);
+        dbtn.addEventListener('blur', depsHideSoon);
         dbtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); depsShow(dbtn); });
         btn.parentElement.insertBefore(dbtn, btn);
       }
@@ -1710,8 +1687,7 @@
     });
   }
 
-  // ---- dependency tooltip --------------------------------------------------
-
+  // Dependency tooltip
   var depsTimer = null;
 
   function depsTip() {
@@ -1725,6 +1701,10 @@
     }
     return state.depsTip;
   }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && state.depsTip) state.depsTip.style.display = 'none';
+  });
 
   function depsHideSoon() {
     clearTimeout(depsTimer);
@@ -1806,9 +1786,8 @@
     decorate();
   }
 
-  // The site re-declares these with !important from styles injected after
-  // ours, so stylesheet order can flip who wins. Inline style with the
-  // "important" priority outranks every stylesheet, always.
+  // The site re-declares these with !important in styles injected after ours;
+  // inline !important outranks every stylesheet.
   function compactInline(el, on) {
     // no-op unless the state actually changes, and never touch a card that
     // was never made compact - the site owns its inline styles
@@ -1870,8 +1849,7 @@
     card.classList.remove('mrsort-desc-open');
   }, true);
 
-  // -------------------------------------------------------- infinite scroll
-
+  // Infinite scroll
   // Pages loaded without the user scrolling. Filters can keep the sentinel on
   // screen forever, so this stops a runaway; scrolling clears it.
   var BURST_PAGES = 5;
@@ -1905,6 +1883,7 @@
     if (state.autoPill) return state.autoPill;
     var wrap = iconPill('mrsort-autopill', function () { setAutoload(!state.scroll.enabled); });
     wrap.firstChild.title = 'Load the next page of results as you scroll';
+    wrap.firstChild.setAttribute('aria-label', 'Auto-load pages');
     wrap.firstChild.appendChild(icon(ICON.autoload, 20));
     state.autoPill = wrap;
     return wrap;
@@ -1918,6 +1897,7 @@
     pill.className = 'mrsort-pill mrsort-pill-icon ' + cls;
     pill.setAttribute('role', 'button');
     pill.setAttribute('tabindex', '0');
+    pill.setAttribute('aria-pressed', 'false');
     pill.addEventListener('click', onClick);
     pill.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
@@ -1936,6 +1916,7 @@
     var count = document.createElement('span');
     count.className = 'mrsort-eye-count';
     wrap.firstChild.appendChild(count);
+    wrap.firstChild.setAttribute('aria-label', 'Show hidden projects');
     state.eyePill = wrap;
     return wrap;
   }
@@ -1948,6 +1929,7 @@
       refresh();
     });
     wrap.firstChild.appendChild(icon(ICON.rows, 20));
+    wrap.firstChild.setAttribute('aria-label', 'Compact cards');
     state.compactPill = wrap;
     return wrap;
   }
@@ -1974,9 +1956,11 @@
     });
 
     auto.firstChild.setAttribute('data-on', state.scroll.enabled ? '1' : '0');
+    auto.firstChild.setAttribute('aria-pressed', String(state.scroll.enabled));
 
     var ep = eye.firstChild;
     var on = state.reveal ? '1' : '0';
+    ep.setAttribute('aria-pressed', String(state.reveal));
     if (ep.getAttribute('data-on') !== on) {
       ep.setAttribute('data-on', on);
       var oi = ep.querySelector('svg');
@@ -1990,6 +1974,7 @@
 
     var cp = compact.firstChild;
     cp.setAttribute('data-on', state.compact ? '1' : '0');
+    cp.setAttribute('aria-pressed', String(state.compact));
     cp.title = state.compact ? 'Normal cards' : 'Compact cards';
     return true;
   }
@@ -2005,9 +1990,8 @@
     return u.toString();
   }
 
-  // Modrinth's pager is buttons, not links, so the last page is read off the
-  // numeric labels. Overshooting is harmless: that page returns nothing new
-  // and we stop anyway.
+  // The pager is buttons, not links, so the last page is read off the numeric labels.
+  // Overshooting is harmless: that page returns nothing new.
   function lastPage(root) {
     var best = 0;
     var nodes = (root || document).querySelectorAll('button,a');
@@ -2057,6 +2041,13 @@
         sc.fails = 0;
         loadNext();
       });
+      sc.el.setAttribute('role', 'button');
+      sc.el.tabIndex = 0;
+      sc.el.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        sc.el.click();
+      });
     }
     if (!sc.el.isConnected || sc.el.previousElementSibling !== list.container) {
       list.container.parentElement.insertBefore(sc.el, list.container.nextSibling);
@@ -2079,9 +2070,8 @@
     return r.top <= h + 800 && r.bottom >= -800;
   }
 
-  // The IntersectionObserver is the primary trigger. This timer check is the
-  // backstop: observers and rAF are tied to the rendering lifecycle and go
-  // quiet in throttled or non-compositing tabs, where a plain rect test does not.
+  // Backstop for the IntersectionObserver, which goes quiet in throttled or
+  // non-compositing tabs where a plain rect test still works.
   function autoLoadTick() {
     var sc = state.scroll;
     if (sc.enabled && !sc.loading && !sc.done && nearViewport(sc.el)) loadNext();
@@ -2154,8 +2144,7 @@
     apply();
   }
 
-  // ------------------------------------------------------------------- flow
-
+  // Flow
   var state = {
     list: null, bar: null, prefs: null, kind: null, ranks: null, run: 0,
     hidden: loadHidden(), reveal: load(REVEAL_KEY, false) === true, block: loadBlock(),
