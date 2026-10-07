@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Scrap.TF - Hide Entered Raffles
 // @namespace    https://github.com/ceeprus
-// @version      1.1
+// @version      1.2
 // @description  Hide already-entered (darkened) raffles on scrap.tf raffle lists, with an eye toggle button next to Create Raffle
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=scrap.tf
 // @author       Cee
@@ -27,7 +27,7 @@
     'body.stf-hide-entered .panel-raffle.raffle-entered{display:none!important}' +
     '#stf-eye-toggle{margin-right:8px;cursor:pointer}' +
     '#stf-eye-toggle.stf-floating{position:fixed;bottom:20px;right:20px;z-index:99999;margin:0}' +
-    '#stf-eye-badge{display:inline-block;margin-left:5px;background:#e74c3c;color:#fff;' +
+    '#stf-eye-badge{display:inline-block;margin-left:5px;background:#c0392b;color:#fff;' +
     'border-radius:9px;font-size:11px;line-height:16px;min-width:16px;padding:0 4px;' +
     'text-align:center;vertical-align:middle}';
   document.head.appendChild(style);
@@ -49,14 +49,20 @@
   var icon = btn.querySelector('.fa');
   var badge = btn.querySelector('#stf-eye-badge');
 
+  // Writes only on change, so a button that lands inside the list can't feed the observer.
   function render() {
     document.body.classList.toggle('stf-hide-entered', hidden);
-    icon.className = 'fa fa-fw ' + (hidden ? 'fa-eye-slash' : 'fa-eye');
+    var cls = 'fa fa-fw ' + (hidden ? 'fa-eye-slash' : 'fa-eye');
+    if (icon.className !== cls) icon.className = cls;
     var n = list.querySelectorAll('.panel-raffle.raffle-entered').length;
-    badge.textContent = n;
-    btn.title = hidden
-      ? n + ' entered raffle(s) hidden — click to show'
-      : n + ' entered raffle(s) shown — click to hide';
+    if (badge.textContent !== String(n)) badge.textContent = n;
+    var label = n + (n === 1 ? ' entered raffle ' : ' entered raffles ') +
+      (hidden ? 'hidden. Click to show.' : 'shown. Click to hide.');
+    if (btn.title !== label) {
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+    }
+    btn.setAttribute('aria-pressed', String(hidden));
   }
 
   btn.addEventListener('click', function () {
