@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Email
 // @namespace    cee
-// @version      2.2
+// @version      2.3
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -37,7 +37,9 @@
       ? v.filter((e) => e && typeof e.term === "string" && typeof e.alias === "string" && e.term.length >= MIN_LENGTH)
       : [];
 
-  // An email entry also hides its bare username; Gmail entries ignore dots and +tags like Gmail does.
+  // Only what the user listed is hidden. A username on its own is often a public handle, and rewriting it breaks
+  // sites and extensions that read names from the page, so it needs its own entry. Gmail entries ignore dots and
+  // +tags like Gmail does.
   function buildMatcher(entries) {
     const emails = [], words = [];
     for (const { term, alias } of entries) {
@@ -51,7 +53,6 @@
       const loc = gmail ? [...local.replace(/\./g, "")].map(esc).join("\\.?") : esc(local);
       const dom = gmail ? "(?:gmail|googlemail)\\.com" : esc(domain);
       emails.push([`(?<![\\p{L}\\p{N}_.+-])(${loc}(?:\\+[\\p{L}\\p{N}_.-]*)?(?:@|%40)${dom})(?![\\p{L}\\p{N}_-])`, `${alias}@${MASK_DOMAIN}`]);
-      if (local.length >= 5) words.push([loc, alias]);
     }
     const all = [...emails, ...words.map(([p, a]) => [`(?<!${WORD})(${p})(?!${WORD})`, a])];
     if (!all.length) return null;
