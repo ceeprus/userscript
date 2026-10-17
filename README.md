@@ -21,6 +21,7 @@ Click a script name to install it. If you have [Violentmonkey](https://violentmo
 | [GitHub Commit Email Revealer](https://raw.githubusercontent.com/ceeprus/userscript/main/github/user-mail.user.js) | Shows all commit author emails in a popup next to "Browse Files", with a live status indicator. |
 | [VRChat: Hide Worlds](https://raw.githubusercontent.com/ceeprus/userscript/main/vrchat/vrchat-hide-worlds.user.js) | Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card. Eye button next to the friends list cycles hidden worlds between normal, dimmed and gone; the rocket button next to it picks the instance type and region, and can press Launch World for you. |
 | [Modrinth Plus](https://raw.githubusercontent.com/ceeprus/userscript/main/modrinth/modrinth-list-sort.user.js) | Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results. |
+| [Hide My Email](https://raw.githubusercontent.com/ceeprus/userscript/main/privacy/hide-my-email.user.js) | Masks the email addresses you choose on every site: page text, the tab title, tooltips and form fields. Add them from your userscript manager menu under "Edit hidden emails". The list stays in your browser, not in the script. |
 
 ## Steam Inventory Augmentor: backpack.tf key
 
