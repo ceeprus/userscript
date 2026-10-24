@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backloggd - Copy Review Link
 // @namespace    https://github.com/ceeprus
-// @version      1.2
+// @version      1.3
 // @description  Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       Cee
@@ -114,20 +114,26 @@
         return btn;
     }
 
+    const handled = new WeakSet();
+
     function addCopyButtons() {
         document.querySelectorAll('a.open-review-link').forEach((link) => {
             const parentCol = link.closest('.col-auto');
-            if (!parentCol || parentCol.dataset.copyBtnAdded) return;
+            if (!parentCol || handled.has(parentCol)) return;
 
             const href = link.getAttribute('href');
             if (!href) return;
+            handled.add(parentCol);
+
+            // Turbo restores visited pages from cloned snapshots: our old buttons come back without their listeners.
+            const stale = parentCol.nextElementSibling;
+            if (stale && stale.querySelector('.copy-review-link-btn')) stale.remove();
 
             const wrapper = document.createElement('div');
             wrapper.className = 'col-auto my-auto pr-1';
             wrapper.appendChild(createCopyButton(href));
 
             parentCol.insertAdjacentElement('afterend', wrapper);
-            parentCol.dataset.copyBtnAdded = 'true';
         });
     }
 
