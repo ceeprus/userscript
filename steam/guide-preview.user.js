@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Guide: Live Side Preview
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.05
+// @version      1.06
 // @description  Docks a live rendered preview to the right of the guide section editor, updating as you type. Reuses Steam's own bb_* styles and never touches the Edit/Preview/Changes tabs or the form fields.
 // @author       ceeprus
 // @match        https://steamcommunity.com/sharedfiles/editguidesubsection/*
@@ -215,7 +215,6 @@
     };
   })();
 
-  // UI
   var K_W = 'panelWidth', K_COLLAPSED = 'collapsed', K_REVEAL = 'reveal';
   var MIN_W = 280, MAX_W = 900, DEFAULT_W = 440;
 
@@ -280,6 +279,8 @@
     grip.setAttribute('role', 'separator');
     grip.setAttribute('aria-orientation', 'vertical');
     grip.setAttribute('aria-label', 'Resize preview (arrow keys)');
+    grip.setAttribute('aria-valuemin', String(MIN_W));
+    grip.setAttribute('aria-valuemax', String(MAX_W));
 
     var head = document.createElement('div'); head.className = 'gp-head';
     var t = document.createElement('span'); t.className = 'gp-title'; t.textContent = 'Live Preview';
@@ -340,6 +341,8 @@
   function setWidth(w) {
     w = Math.max(MIN_W, Math.min(MAX_W, w | 0));
     panel.style.width = w + 'px';
+    var grip = panel.querySelector('.gp-grip');
+    if (grip) grip.setAttribute('aria-valuenow', String(w));
     return w;
   }
 
@@ -377,9 +380,9 @@
     if (!skipSave) store.set(K_COLLAPSED, on);
   }
 
-  // Render
   var desc, titleInput;
   function doRender() {
+    rTimer = null;
     if (!desc) return;
     var val = desc.value;
     var tv = titleInput ? titleInput.value : '';
@@ -403,7 +406,6 @@
   var rTimer = null;
   function scheduleRender() { clearTimeout(rTimer); rTimer = setTimeout(doRender, 120); }
 
-  // Editor-tab visibility
   function editorPaneVisible() {
     var ep = q('EditorPane');
     if (!ep) return true;
@@ -435,7 +437,6 @@
     });
   }
 
-  // Init
   function init() {
     if (panel) return true; // already built
     desc = q('description');
@@ -449,7 +450,7 @@
 
     // Toolbar buttons write into the textarea without firing 'input' in some
     // managers/browsers; a light poll guarantees those inserts show up too.
-    setInterval(function () { if (desc.value !== lastValue) scheduleRender(); }, 600);
+    setInterval(function () { if (desc.value !== lastValue && !rTimer) scheduleRender(); }, 600);
 
     watchTabs();
 
