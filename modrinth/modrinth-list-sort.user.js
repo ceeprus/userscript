@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.17
+// @version      1.18
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -99,7 +99,6 @@
     return KEYS[0];
   }
 
-  // Storage
   function store(key, val) {
     try { if (typeof GM_setValue === 'function') { GM_setValue(key, val); return; } } catch (e) { /* fall through */ }
     try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* quota / private mode */ }
@@ -472,7 +471,6 @@
     return true;
   }
 
-  // Data
   function trim(p) {
     return {
       id: p.id,
@@ -566,7 +564,6 @@
     });
   }
 
-  // List finding
   function slugOf(a) {
     var u;
     try { u = new URL(a.getAttribute('href'), location.origin); } catch (e) { return null; }
@@ -628,7 +625,6 @@
     return { container: best.container, cards: cards };
   }
 
-  // Ordering
   // Cards are never moved. The container is a flex column, so a CSS `order`
   // stamp reorders visually while Vue's keyed DOM stays exactly as it was.
   function canUseOrder(container) {
@@ -688,7 +684,6 @@
     return entries;
   }
 
-  // Pages
   function pageKind() {
     var p = location.pathname;
     // a project's own page is never a list, so nothing is attached there
@@ -713,7 +708,6 @@
     location.href = u.toString();
   }
 
-  // UI
   var CSS = [
     // Custom tags: Vue hydration adopts a foreign element whose tag matches its vnode,
     // and no Modrinth vnode is an <mrsort-*> tag.
@@ -849,6 +843,7 @@
 
     var select = document.createElement('select');
     select.className = 'mrsort-key';
+    select.setAttribute('aria-label', 'Sort by');
     KEYS.forEach(function (k) {
       var o = document.createElement('option');
       o.value = k.id;
@@ -864,6 +859,7 @@
     compact.type = 'button';
     compact.className = 'mrsort-compact-btn';
     compact.title = 'Compact cards';
+    compact.setAttribute('aria-label', 'Compact cards');
     compact.appendChild(icon(ICON.rows));
     compact.addEventListener('click', function () {
       state.compact = !state.compact;
@@ -961,6 +957,7 @@
     dir.title = def.text
       ? (asc ? 'A to Z' : 'Z to A')
       : (asc ? 'Lowest first' : 'Highest first');
+    dir.setAttribute('aria-label', 'Sort direction: ' + dir.title);
 
     var n = hiddenCount();
     var eye = state.bar.querySelector('.mrsort-eye');
@@ -975,7 +972,8 @@
       eye.insertBefore(icon(state.reveal ? ICON.eye : ICON.eyeOff), eye.firstChild);
     }
     eye.querySelector('.mrsort-eye-count').textContent = n ? String(n) : '';
-    eye.title = state.reveal ? 'Hidden projects are shown - click to hide them again' : 'Show hidden projects';
+    eye.title = state.reveal ? 'Hidden projects are shown. Click to hide them again.' : 'Show hidden projects';
+    eye.setAttribute('aria-label', eye.title + (n ? ' (' + n + ' hidden)' : ''));
 
     state.bar.querySelector('.mrsort-unhide-all').style.display =
       (state.reveal && Object.keys(state.hidden).length) ? '' : 'none';
@@ -984,6 +982,7 @@
     var cbtn = state.bar.querySelector('.mrsort-compact-btn');
     cbtn.style.display = pillsPlaced ? 'none' : '';
     cbtn.setAttribute('data-on', state.compact ? '1' : '0');
+    cbtn.setAttribute('aria-pressed', String(state.compact));
     cbtn.title = state.compact ? 'Normal cards' : 'Compact cards';
     var upd = state.bar.querySelector('.mrsort-update');
     upd.style.display = state.updAvail ? '' : 'none';
@@ -1020,6 +1019,7 @@
     input.className = 'mrsort-filter-input';
     input.placeholder = 'Exclude…';
     input.title = 'Hide projects whose name contains these words. Enter or comma to add.';
+    input.setAttribute('aria-label', 'Exclude projects by name');
     filter.appendChild(chips);
     filter.appendChild(input);
 
@@ -1058,6 +1058,7 @@
     area.rows = 6;
     area.spellcheck = false;
     area.placeholder = 'Paste your mod list, one per line:\n\nAccelerated Decay\nAdvancedLootInfo (https://modrinth.com/mod/PEPVViac) [1.12.0] by Yanny';
+    area.setAttribute('aria-label', 'Mod list, one project per line');
     area.value = state.modlist.raw || '';
 
     var row = document.createElement('div');
@@ -1145,8 +1146,8 @@
 
   function paintModlist() {
     if (!state.modlistNote) return;
-    var n = modlistSize();
-    state.modlistNote.textContent = n ? n + ' entries active' : '';
+    var n = state.modlist.lines;
+    state.modlistNote.textContent = n ? n + (n === 1 ? ' entry active' : ' entries active') : '';
     if (state.modlistEl) {
       var r = state.modlistEl.querySelector('input[name=mrsort-mlmode][value="' + state.mlMode + '"]');
       if (r && !r.checked) r.checked = true;
@@ -1386,7 +1387,7 @@
     if (state.rangeEl) return state.rangeEl;
     var range = document.createElement('div');
     range.className = 'mrsort-range';
-    range.title = 'Dim projects outside this download range';
+    range.title = 'Hide projects outside this download range';
     var track = document.createElement('span');
     track.className = 'mrsort-range-track';
     var rail = document.createElement('span');
@@ -1404,6 +1405,8 @@
     });
     rMin.classList.add('mrsort-r-min');
     rMax.classList.add('mrsort-r-max');
+    rMin.setAttribute('aria-label', 'Minimum downloads');
+    rMax.setAttribute('aria-label', 'Maximum downloads');
     var rLabel = document.createElement('span');
     rLabel.className = 'mrsort-range-label';
     track.appendChild(rail);
@@ -1422,13 +1425,15 @@
     nMax.className = 'mrsort-rnum mrsort-rnum-max';
     nMin.placeholder = 'min';
     nMax.placeholder = 'max';
+    nMin.setAttribute('aria-label', 'Minimum downloads, exact');
+    nMax.setAttribute('aria-label', 'Maximum downloads, exact');
     [nMin, nMax].forEach(function (n) {
       n.type = 'text';
       n.spellcheck = false;
-      n.title = 'Exact amount - plain number or 10K / 1.5M';
+      n.title = 'Exact amount: a plain number, or 10K / 1.5M';
     });
     var dash = document.createElement('span');
-    dash.textContent = '–';
+    dash.textContent = 'to';
     nums.appendChild(nMin);
     nums.appendChild(dash);
     nums.appendChild(nMax);
@@ -1482,7 +1487,7 @@
     fill.style.left = lo + '%';
     fill.style.width = Math.max(0, hi - lo) + '%';
     var txt = !rangeActive() ? 'All downloads'
-      : (state.dlMinC > 0 ? fmtCount(state.dlMinC) : '0') + ' – ' +
+      : (state.dlMinC > 0 ? fmtCount(state.dlMinC) : '0') + ' to ' +
         (state.dlMaxC > 0 ? fmtCount(state.dlMaxC) : '∞');
     if (label.textContent !== txt) label.textContent = txt;
     var nMin = state.rangeEl.querySelector('.mrsort-rnum-min');
@@ -1490,6 +1495,11 @@
     // don't fight the keyboard: only sync the boxes when not being edited
     if (document.activeElement !== nMin) nMin.value = state.dlMinC > 0 ? fmtCount(state.dlMinC) : '';
     if (document.activeElement !== nMax) nMax.value = state.dlMaxC > 0 ? fmtCount(state.dlMaxC) : '';
+    // the sliders run on log positions, so they announce the counts those stand for
+    var minText = state.dlMinC > 0 ? fmtCount(state.dlMinC) : 'no minimum';
+    var maxText = state.dlMaxC > 0 ? fmtCount(state.dlMaxC) : 'no maximum';
+    if (rMin.getAttribute('aria-valuetext') !== minText) rMin.setAttribute('aria-valuetext', minText);
+    if (rMax.getAttribute('aria-valuetext') !== maxText) rMax.setAttribute('aria-valuetext', maxText);
   }
 
   // Compares dotted versions against the published header once a day and
@@ -1564,7 +1574,6 @@
     paintBar();
   }
 
-  // Card buttons
   // The follower heart's row is the stat strip at the card's top right. Appending lands
   // after the Vue fragment's closing anchor, so Vue's diff is untouched.
   function actionRow(cardEl) {
@@ -1680,6 +1689,8 @@
         chip.className = 'mrsort-owned';
         chip.textContent = '✓';
         chip.title = 'In your modlist';
+        chip.setAttribute('role', 'img');
+        chip.setAttribute('aria-label', 'In your modlist');
         btn.parentElement.insertBefore(chip, dbtn);
       } else if (!owned && chip) {
         chip.parentElement.removeChild(chip);
@@ -1694,6 +1705,7 @@
     if (!state.depsTip) {
       var tip = document.createElement('mrsort-tip');
       tip.className = 'mrsort-tip';
+      tip.setAttribute('role', 'status');
       tip.addEventListener('mouseenter', function () { clearTimeout(depsTimer); });
       tip.addEventListener('mouseleave', depsHideSoon);
       document.body.appendChild(tip);
@@ -1966,11 +1978,13 @@
       var oi = ep.querySelector('svg');
       if (oi) ep.removeChild(oi);
       ep.insertBefore(icon(state.reveal ? ICON.eye : ICON.eyeOff, 20), ep.firstChild);
-      ep.title = state.reveal ? 'Hidden projects are shown - click to hide them again' : 'Show hidden projects';
+      ep.title = state.reveal ? 'Hidden projects are shown. Click to hide them again.' : 'Show hidden projects';
     }
     var n = hiddenCount();
     var cnt = ep.querySelector('.mrsort-eye-count');
     if (cnt.textContent !== (n ? String(n) : '')) cnt.textContent = n ? String(n) : '';
+    var eyeName = 'Show hidden projects' + (n ? ' (' + n + ' hidden)' : '');
+    if (ep.getAttribute('aria-label') !== eyeName) ep.setAttribute('aria-label', eyeName);
 
     var cp = compact.firstChild;
     cp.setAttribute('data-on', state.compact ? '1' : '0');
@@ -2024,6 +2038,8 @@
     else text = 'Load more';
     if (sc.el.textContent !== text) sc.el.textContent = text;
     sc.el.style.cursor = sc.done || sc.loading ? 'default' : 'pointer';
+    var disabled = String(sc.done || sc.loading);
+    if (sc.el.getAttribute('aria-disabled') !== disabled) sc.el.setAttribute('aria-disabled', disabled);
   }
 
   function ensureSentinel(list) {
@@ -2144,7 +2160,6 @@
     apply();
   }
 
-  // Flow
   var state = {
     list: null, bar: null, prefs: null, kind: null, ranks: null, run: 0,
     hidden: loadHidden(), reveal: load(REVEAL_KEY, false) === true, block: loadBlock(),
@@ -2251,7 +2266,7 @@
         clearOrder(list);
       }
 
-      // download-range dimming - marks cards, never reorders them
+      // download range: hides cards outside it, never reorders them
       var outRange = 0;
       list.cards.forEach(function (c) {
         var d = data[c.slug];
