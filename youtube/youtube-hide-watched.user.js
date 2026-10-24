@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.30
+// @version      6.31
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
@@ -402,7 +402,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 	const findMixesContainers = () => {
 		const mixesContainers = [];
 
-		// Library and channel playlist tabs are lists of playlists -- hiding
+		// Library and channel playlist tabs are lists of playlists: hiding
 		// them there would empty the page.
 		if (location.pathname.match(REGEX_PLAYLIST_LISTING_PATH)) {
 			return mixesContainers;
@@ -886,8 +886,8 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 
 			// /feed/channels lazy-loads, so the initial HTML holds only the
 			// first batch of subscriptions. Parse that, then follow the list's
-			// continuation tokens through the InnerTube API to collect EVERY
-			// subscription -- otherwise channels past the first page never make
+			// continuation tokens through the InnerTube API to collect every
+			// subscription. Otherwise channels past the first page never make
 			// it into the set and can't be hidden.
 			const authUser = getSessionIndex();
 			const res = await fetch(
@@ -1043,7 +1043,7 @@ const REGEX_SESSION_INDEX = /"SESSION_INDEX":"(\d+)"/;
 				el.classList.remove('YT-HWV-SUBBED-HIDDEN');
 			});
 
-			// Homepage only -- elsewhere this would nuke whole pages.
+			// Homepage only: elsewhere this would nuke whole pages.
 			if (location.pathname !== '/') return;
 
 			const state = await stateGet('YTHWV_STATE_SUBBED', 'normal');
