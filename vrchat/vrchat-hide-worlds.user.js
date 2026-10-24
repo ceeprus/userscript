@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.32
+// @version      1.33
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -360,6 +360,14 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 
 .VRCWH-JOIN svg { height: 13px; width: 13px }
 
+/* Touch: 44px targets. The eye's extra reach points off the card's corner, never over
+   its art, where a stray tap should still open the world. */
+@media (pointer: coarse) {
+	.VRCWH-CARD .VRCWH-BTN { height: 36px; width: 36px }
+	.VRCWH-BTN::before { content: ''; inset: -10px -10px 0 0; position: absolute }
+	.VRCWH-CARD .VRCWH-JOIN { min-height: 44px }
+}
+
 .VRCWH-PANEL {
 	background: #1b1f22;
 	border: 1px solid #333;
@@ -409,7 +417,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 
 .VRCWH-OPT-NAME { color: #fff; flex: none; font-weight: 600 }
 
-.VRCWH-OPT-HINT { color: #8b969c; font-size: 11px }
+.VRCWH-OPT-HINT { color: #97a1a7; font-size: 11px }
 
 .VRCWH-CHIPS { display: flex; gap: 6px }
 
@@ -470,7 +478,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	width: 4px;
 }
 
-.VRCWH-PANEL-NOTE { color: #8b969c; font-size: 11px; margin-top: 8px }
+.VRCWH-PANEL-NOTE { color: #97a1a7; font-size: 11px; margin-top: 8px }
 
 .VRCWH-BTN:focus-visible,
 .VRCWH-FAB:focus-visible,
@@ -1144,7 +1152,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const unhideAll = async () => {
 		const count = Object.keys(hidden).length;
 		if (count === 0) return;
-		if (!confirm(`Un-hide all ${count} hidden world(s)?`)) return;
+		if (!confirm(`Un-hide all ${count} hidden world${count === 1 ? '' : 's'}?`)) return;
 
 		hidden = {};
 		await persistHidden();
@@ -1341,6 +1349,10 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		document.body.appendChild(panel);
 		launchFab?.setAttribute('aria-expanded', 'true');
 		positionFab();
+		// The panel sits at the end of <body>, so keyboard users are taken into it.
+		(panel.querySelector('.VRCWH-ON') || panel.querySelector('button'))?.focus({
+			preventScroll: true,
+		});
 	};
 
 	// Rebuilt only when what it shows changed: applyAll runs on every DOM mutation,
