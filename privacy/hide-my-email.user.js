@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Email
 // @namespace    cee
-// @version      2.3
+// @version      2.4
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -37,9 +37,8 @@
       ? v.filter((e) => e && typeof e.term === "string" && typeof e.alias === "string" && e.term.length >= MIN_LENGTH)
       : [];
 
-  // Only what the user listed is hidden. A username on its own is often a public handle, and rewriting it breaks
-  // sites and extensions that read names from the page, so it needs its own entry. Gmail entries ignore dots and
-  // +tags like Gmail does.
+  // Only listed terms are hidden: a bare username is often a public handle, and rewriting it breaks pages that read it.
+  // Gmail entries ignore dots and +tags, as Gmail does.
   function buildMatcher(entries) {
     const emails = [], words = [];
     for (const { term, alias } of entries) {
@@ -386,9 +385,8 @@
     built.focus();
   }
 
-  // Seen from the page, keys typed in the panel come from its host element, not a text field, so site
-  // shortcut handlers (Gmail, YouTube, GitHub) swallow them. This listener is registered at document-start,
-  // before any page script, so it runs first and keeps those keys away from the page.
+  // From the page, panel keystrokes come from the host element, not a field, so site shortcut handlers eat them.
+  // Registered at document-start, this capture listener runs before any page script and stops them first.
   function guardPanel(e) {
     if (!panel || e.target !== panel) return;
     e.stopImmediatePropagation();
