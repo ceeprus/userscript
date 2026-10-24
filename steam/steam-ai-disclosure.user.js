@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.41
+// @version      2.42
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure": a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -31,7 +31,6 @@
     if (window.top !== window.self) return;                 // skip embedded widgets/iframes
     if (location.pathname.startsWith('/widget/')) return;
 
-    // Tweakables
     const TTL_AI       = 30 * 24 * 60 * 60 * 1000;           // cache life for "has AI" results
     const TTL_NONE     =  7 * 24 * 60 * 60 * 1000;           // cache life for "no AI" (devs can add it later)
     const MAX_CONCURRENT = 3;                                // parallel background fetches
@@ -133,7 +132,6 @@
     const TITLE_RE = new RegExp(TITLES.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         .replace(/ /g, '(?:\\s|&nbsp;|&#160;)+').replace(/'/g, "(?:'|&#0*39;|&apos;|&#x0*27;)")).join('|'));
 
-    // Style
     // The badge is shaped like Steam's own capsule flags (the discount chip, "Free To Play"):
     // flat, dark, 2px corners, small uppercase Motiva Sans, just amber instead of Steam's green.
     const ACCENT = '#ffce5c';   // AI disclosure: Steam's own flag shape, amber
@@ -887,7 +885,6 @@
         return p;
     }
 
-    // Badges
     function makeBadge(text) {
         const b = document.createElement('span');
         b.className = 'sgai_badge';
@@ -1882,7 +1879,7 @@ ${SIGNATURE}`;
         hidden = loadHidden();                               // the count as it stands, other tabs included
         const n = hiddenCount();
         if (!n) { alert('No games are hidden.'); return; }
-        if (!confirm(`Show all ${n} hidden game(s) again?`)) return;
+        if (!confirm(`Show all ${n} hidden game${n === 1 ? '' : 's'} again?`)) return;
         hidden = {};
         saveHidden();
         for (const m of ownMarks.splice(0)) m.target?.classList.remove('sgai_own');
@@ -2055,6 +2052,7 @@ ${SIGNATURE}`;
             hoverBtn.classList.toggle('sgai_hide_on', on);
             hoverBtn.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
             hoverBtn.title = (on ? 'Show this game again' : 'Hide this game') + `\n\n${SIGNATURE}`;
+            hoverBtn.setAttribute('aria-label', on ? 'Show this game again' : 'Hide this game');
         }
         const spot = clearSpot(buttonSpot(hoverEl, hoverId), box);
         const style = styleOf(hoverBtn, '.sgai_hide');
@@ -2454,6 +2452,7 @@ ${SIGNATURE}`;
             b.dataset.mode = MODE;
             b.innerHTML = EYE_SVG[EYE[MODE].open ? 'open' : 'shut'];
             b.title = `AI disclosure: ${EYE[MODE].label}\nClick to cycle. Next: ${EYE[nextMode()].label}\n\n${SIGNATURE}`;
+            b.setAttribute('aria-label', `AI-disclosed games: ${EYE[MODE].label}. Next: ${EYE[nextMode()].label}`);
         }
     }
 
@@ -2481,7 +2480,6 @@ ${SIGNATURE}`;
         b.innerHTML = EYE_SVG[on ? 'open' : 'shut'];
         b.title = (on ? 'Hidden from store listings. Click to show it again.' : 'Hide this game from store listings') + `\n\n${SIGNATURE}`;
         b.setAttribute('aria-label', on ? 'Show this game in store listings again' : 'Hide this game from store listings');
-        b.setAttribute('aria-pressed', String(on));
     }
 
     function syncOwnButtons() {
@@ -2493,6 +2491,7 @@ ${SIGNATURE}`;
             b.innerHTML = EYE_SVG[OWN === 'hide' ? 'shut' : 'open'];
             b.title = `Games you hid yourself: ${n} on the list, ${OWN === 'hide' ? 'hidden' : 'shown (faded)'}\n` +
                 `Click to ${OWN === 'hide' ? 'show them again' : 'hide them'}. Alt-click to empty the list.\n\n${SIGNATURE}`;
+            b.setAttribute('aria-label', `Games you hid yourself: ${n}, ${OWN === 'hide' ? 'hidden' : 'shown'}. Alt+Enter empties the list.`);
         }
     }
 
@@ -2739,7 +2738,6 @@ ${SIGNATURE}`;
     addEventListener('resize', alignSoon);
     try { document.fonts?.ready.then(alignEye); } catch (e) { /* no FontFaceSet */ }
 
-    // Menu
     // Modes live on the eye button; only the cache reset is left with nowhere better to sit.
     if (typeof GM_registerMenuCommand === 'function') {
         // The eye owns this normally, but it stands down when the page blocks our styles, and a
@@ -2763,7 +2761,6 @@ ${SIGNATURE}`;
         });
     }
 
-    // Start
     // Everything above ran at document-start so the list repack beats Steam. The rest needs a parsed
     // page: a body to measure styles against, the header, the capsules.
     let started = false;
