@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.31
+// @version      1.32
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -15,11 +15,8 @@
 // @updateURL    https://raw.githubusercontent.com/ceeprus/userscript/main/twitter/viewerplus.user.js
 // ==/UserScript==
 
-/*
- * Panel above the "You might like" card on X/Twitter profiles: whole-tweet filters (with counters),
- * per-tweet modifiers, persistent settings, minimise and reset. Re-applies on every timeline change
- * since X recycles tweet nodes. Relies on some hashed X classes and English UI strings.
- */
+// Re-applies on every timeline change, since X recycles tweet nodes.
+// Relies on some hashed X classes and English UI strings.
 
 (function () {
   'use strict';
@@ -170,6 +167,8 @@
       border: ref.borderTopWidth + ' solid ' + ref.borderTopColor,
       borderRadius: ref.borderTopLeftRadius,
       fontFamily: FONT_STACK,
+      // currentColor for the focus rings; text and icons set their own colours
+      color: headingTextEl ? getComputedStyle(headingTextEl).color : getComputedStyle(document.body).color,
       marginBottom: '16px', padding: '12px 16px', boxSizing: 'border-box',
     });
 
@@ -274,7 +273,7 @@
 
     const controls = document.createElement('div');
     Object.assign(controls.style, { flex: '0 0 auto', display: 'flex', alignItems: 'center' });
-    controls.append(buildReset(), buildMinimize(header));
+    controls.append(buildReset(headingTextEl ? getComputedStyle(headingTextEl).color : getComputedStyle(document.body).color), buildMinimize(header));
 
     header.append(title, controls);
     return header;
@@ -355,12 +354,18 @@
       left.append(counter);
     }
 
-    row.append(left, buildCheckbox(item.key, item.label));
+    const box = buildCheckbox(item.key, item.label);
+    row.append(left, box);
+    // A <label> only forwards clicks to real form controls, and the box is a div.
+    row.addEventListener('click', (e) => {
+      if (box.contains(e.target) || String(window.getSelection())) return; // a drag that selected text is not a click
+      box.click();
+    });
     return row;
   }
 
   // "Reset all" as a refresh-icon button (sits left of the minimise chevron in the header).
-  function buildReset() {
+  function buildReset(hoverColor) {
     const btn = document.createElement('div');
     btn.setAttribute('role', 'button');
     btn.setAttribute('aria-label', 'Reset all');
@@ -372,7 +377,7 @@
     });
     btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill:currentColor">' +
       '<path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
-    btn.addEventListener('mouseenter', () => { btn.style.color = '#e7e9ea'; });
+    btn.addEventListener('mouseenter', () => { btn.style.color = hoverColor; });
     btn.addEventListener('mouseleave', () => { btn.style.color = MUTED; });
 
     const run = (e) => { e.preventDefault(); e.stopPropagation(); resetAll(); };
@@ -565,7 +570,6 @@
     if (!modsActive && !modsWereActive) return; // nothing to apply, nothing left to restore
 
     document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
-      // Text
       tweet.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
         el.style.display = state.hideText ? 'none' : '';
       });
@@ -698,6 +702,12 @@
     scheduled = true;
     requestAnimationFrame(() => { scheduled = false; ensureBox(); applyFilters(); });
   }
+
+  // The panel's controls are divs, so they get an explicit keyboard focus ring.
+  const focusStyle = document.createElement('style');
+  focusStyle.textContent = '#' + BOX_ID + ' [role="button"]:focus-visible,#' + BOX_ID + ' [role="checkbox"]:focus-visible' +
+    '{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}';
+  document.head.appendChild(focusStyle);
 
   loadState();
   setupFastRetweet();
