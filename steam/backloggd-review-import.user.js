@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Curator: Import Review Link from Backloggd
 // @namespace    https://github.com/ceeprus
-// @version      2.5
+// @version      2.6
 // @description  Adds a searchable "Import from Backloggd" box next to the "URL for full review (Optional)" field on Steam Curator review-edit pages, letting you pick one of your Backloggd reviews, auto-fill the link, and optionally import the review text into "Write your review". Prompts for your Backloggd username on first use.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -25,9 +25,9 @@
     const CACHE_KEY_PREFIX = 'bglg_reviews_cache_';
     const CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
     const MAX_RESULTS_SHOWN = 8;
-    // Bump this whenever the shape of cached review items changes, so old
-    // caches (missing newer fields like `text`) are automatically refetched.
-    const CACHE_SCHEMA_VERSION = 2;
+    // Bump whenever cached review items change (a new field, or text read differently),
+    // so old caches are refetched instead of served.
+    const CACHE_SCHEMA_VERSION = 3;
 
     const STYLE_ID = 'bglg-import-style';
 
@@ -93,7 +93,9 @@
                 border-radius: 4px;
                 background: #16202d;
                 color: #67c1f5;
+                font-family: inherit;
                 font-size: 12px;
+                line-height: inherit;
                 text-decoration: none;
                 cursor: pointer;
                 transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -107,7 +109,7 @@
             .bglg-import-item:focus-visible,
             .bglg-import-refresh:focus-visible,
             .bglg-import-loadmore:focus-visible,
-            .bglg-import-blurb-prompt a:focus-visible {
+            .bglg-import-blurb-prompt button:focus-visible {
                 outline: 2px solid #67c1f5;
                 outline-offset: 1px;
             }
@@ -123,7 +125,7 @@
                 left: 0;
                 z-index: 1000;
                 margin-top: 4px;
-                width: 340px;
+                width: min(340px, calc(100vw - 24px));
                 max-height: 340px;
                 overflow-y: auto;
                 background: #1b2838;
@@ -207,10 +209,17 @@
                 margin-top: 6px;
             }
             .bglg-import-refresh,
-            .bglg-import-loadmore {
+            .bglg-import-loadmore,
+            .bglg-import-blurb-prompt button {
+                margin: 0;
+                padding: 0;
+                border: 0;
+                background: none;
                 color: #67c1f5;
+                font-family: inherit;
                 font-size: 11px;
                 text-decoration: none;
+                cursor: pointer;
             }
             .bglg-import-refresh:hover,
             .bglg-import-loadmore:hover {
@@ -233,12 +242,10 @@
                 color: #c6d4df;
                 font-size: 12px;
             }
-            .bglg-import-blurb-prompt a {
-                color: #67c1f5;
-                text-decoration: none;
-                cursor: pointer;
+            .bglg-import-blurb-prompt button {
+                font-size: 12px;
             }
-            .bglg-import-blurb-prompt a:hover {
+            .bglg-import-blurb-prompt button:hover {
                 color: #fff;
                 text-decoration: underline;
             }
@@ -284,17 +291,17 @@
         return (time.getAttribute('aria-label') || time.textContent || '').trim() || null;
     }
 
-    // Find the full review text from the card's review body.
     function findReviewText(reviewLink) {
         const card = reviewLink.closest('.review-card');
         if (!card) return null;
         const textEl = card.querySelector('.card-text');
         if (!textEl) return null;
+        // A <br> has no text of its own, so textContent would glue the lines on either side together.
+        textEl.querySelectorAll('br').forEach((br) => br.replaceWith(' '));
         const text = textEl.textContent.replace(/\s+/g, ' ').trim();
         return text || null;
     }
 
-    // Find the game cover image URL from the card.
     function findGameImage(reviewLink) {
         const card = reviewLink.closest('.review-card');
         if (!card) return null;
@@ -331,11 +338,17 @@
                 method: 'GET',
                 url,
                 onload(resp) {
-                    if (resp.status === 403) {
+                    // Backloggd's bot check (Anubis) answers 200 with a challenge page; a browser tab
+                    // passes it and leaves a cookie that later requests carry.
+                    const body = resp.responseText || '';
+                    const challenged = /id="anubis_challenge"/.test(body) && !/open-review-link/.test(body);
+                    if (resp.status === 403 || challenged) {
                         if (typeof GM_openInTab === 'function') {
                             GM_openInTab(`https://backloggd.com/u/${encodeURIComponent(username)}/`, { active: true });
                         }
-                        reject(new Error('Blocked (403). Your Backloggd profile opened in a new tab: complete any check there, then press refresh list.'));
+                        reject(new Error(challenged
+                            ? 'Backloggd wants a quick browser check. Your profile opened in a new tab: let it finish, then press refresh list.'
+                            : 'Blocked (403). Your Backloggd profile opened in a new tab: complete any check there, then press refresh list.'));
                         return;
                     }
                     if (resp.status < 200 || resp.status >= 300) {
@@ -402,8 +415,8 @@
         const container = document.createElement('span');
         container.className = 'bglg-import-container';
 
-        const toggleBtn = document.createElement('a');
-        toggleBtn.href = '#';
+        const toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
         toggleBtn.className = 'bglg-import-toggle';
 
         const toggleIcon = document.createElement('img');
@@ -425,9 +438,11 @@
         searchBox.type = 'text';
         searchBox.className = 'bglg-import-search';
         searchBox.placeholder = 'Type to search your reviews…';
+        searchBox.setAttribute('aria-label', 'Search your Backloggd reviews');
 
         const status = document.createElement('div');
         status.className = 'bglg-import-status';
+        status.setAttribute('aria-live', 'polite');
 
         const resultsEl = document.createElement('div');
         resultsEl.className = 'bglg-import-results';
@@ -435,15 +450,16 @@
         const bottomRow = document.createElement('div');
         bottomRow.className = 'bglg-import-bottom-row';
 
-        const refreshBtn = document.createElement('a');
-        refreshBtn.href = '#';
+        const refreshBtn = document.createElement('button');
+        refreshBtn.type = 'button';
         refreshBtn.className = 'bglg-import-refresh';
-        refreshBtn.textContent = '↻ refresh list';
+        refreshBtn.innerHTML = '<span aria-hidden="true">↻</span> refresh list';
 
-        const loadMoreBtn = document.createElement('a');
-        loadMoreBtn.href = '#';
+        const LOAD_MORE_HTML = 'Load more <span class="bglg-import-arrow" aria-hidden="true">▾</span>';
+        const loadMoreBtn = document.createElement('button');
+        loadMoreBtn.type = 'button';
         loadMoreBtn.className = 'bglg-import-loadmore';
-        loadMoreBtn.innerHTML = 'Load more <span class="bglg-import-arrow">▾</span>';
+        loadMoreBtn.innerHTML = LOAD_MORE_HTML;
         loadMoreBtn.style.display = 'none';
 
         bottomRow.appendChild(refreshBtn);
@@ -477,13 +493,13 @@
             blurbPromptLabel = document.createElement('span');
             blurbPromptLabel.textContent = 'Add review text?';
 
-            const yesBtn = document.createElement('a');
-            yesBtn.href = '#';
+            const yesBtn = document.createElement('button');
+            yesBtn.type = 'button';
             yesBtn.className = 'bglg-import-blurb-yes';
             yesBtn.textContent = 'Yes';
 
-            const noBtn = document.createElement('a');
-            noBtn.href = '#';
+            const noBtn = document.createElement('button');
+            noBtn.type = 'button';
             noBtn.className = 'bglg-import-blurb-no';
             noBtn.textContent = 'No';
 
@@ -553,7 +569,9 @@
             if (matches.length === 0) {
                 const empty = document.createElement('div');
                 empty.className = 'bglg-import-empty';
-                empty.textContent = 'No matches';
+                empty.textContent = allReviews.length
+                    ? `No reviews match "${query.trim()}".`
+                    : 'No reviews found on this Backloggd profile.';
                 resultsEl.appendChild(empty);
                 return;
             }
@@ -700,7 +718,7 @@
                 })
                 .finally(() => {
                     loadingMore = false;
-                    loadMoreBtn.innerHTML = 'Load more <span class="bglg-import-arrow">▾</span>';
+                    loadMoreBtn.innerHTML = LOAD_MORE_HTML;
                 });
         }
 
@@ -708,7 +726,6 @@
             panel.style.display = open ? 'block' : 'none';
             toggleBtn.setAttribute('aria-expanded', String(open));
         }
-        toggleBtn.setAttribute('role', 'button');
         toggleBtn.setAttribute('aria-expanded', 'false');
 
         toggleBtn.addEventListener('click', (e) => {
@@ -726,6 +743,11 @@
             e.preventDefault();
             setPanelOpen(false);
             toggleBtn.focus();
+        });
+
+        // The box sits inside Steam's review form, where Enter would submit it.
+        searchBox.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') e.preventDefault();
         });
 
         searchBox.addEventListener('input', () => {
