@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.2
+// @version      3.28.3
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -25,7 +25,6 @@
 	// page context (Steam globals, element expandos)
 	const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
-	// Config
 	const CONFIG = {
 		tf2Badges: true,       // paint dots, KS tier, unusual star, spells, festivized, series, gift
 		markUncraftable: true, // dashed outline on non-craftable TF2 items
@@ -80,7 +79,6 @@
 		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
 		'<path fill="#66C0F4" d="M1 1h2.5l.6 2H15l-1.8 7H4.9L3.2 3.6 2.7 2H1zM5.3 9h6.9l1-4H4.6zM6 12a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm7 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg>');
 
-	// Styles
 	const style = document.createElement('style');
 	style.textContent = `
 		.item { position: relative; }
@@ -137,7 +135,7 @@
 		#sia-value-top .sia-vc-trad { color: #E8A33D; font-size: 11px; margin-top: 2px;
 			display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
 		#sia-value-top .sia-vc-trad img { width: 11px; height: 11px; }
-		#sia-value-top .sia-vc-note { color: #777; font-size: 10px; margin-top: 2px; }
+		#sia-value-top .sia-vc-note { color: #8f98a0; font-size: 10px; margin-top: 2px; }
 		.sia-progressbar { height: 3px; margin-top: 3px; border-radius: 2px;
 			background: rgba(255,255,255,.12); overflow: hidden; }
 		.sia-progressbar > div { height: 100%; background: #66c0f4; transition: width .5s; }
@@ -164,7 +162,7 @@
 			text-shadow: 0 0 2px #000, 0 0 3px #000; pointer-events: none; }
 		.sia-bptf img { width: 10px !important; height: 10px !important;
 			flex: 0 0 10px; object-fit: contain; }
-		.sia-price.sia-pending { color: #777; }
+		.sia-price.sia-pending { color: #8f98a0; }
 		.sia-hide-bptf .sia-bptf { display: none; }
 		.sia-panel-links .sia-qs { color: #9CC83B; font: bold 11px/16px Arial;
 			text-decoration: none; white-space: nowrap; }
@@ -204,11 +202,9 @@
 			font: 11px "Motiva Sans", Arial, sans-serif; }
 		.sia-side-summary .sia-big { font-size: 15px; font-weight: bold; color: #fff; }
 		#sia-bar-note { margin-left: auto; }
-		#sia-bar-note .sia-vc-note { min-width: 120px; color: #777; font-size: 10px; }
+		#sia-bar-note .sia-vc-note { min-width: 120px; color: #8f98a0; font-size: 10px; }
 	`;
 	document.head.appendChild(style);
-
-	// Item helpers
 
 	// Inventory page assets look like {assetid, classid, description: {...}};
 	// trade offer page items are old-style with descriptions/tags at top level.
@@ -975,6 +971,7 @@
 					btn.className = 'sia-addall';
 					btn.textContent = `+${copies.length}`;
 					btn.title = `Add all ${copies.length} copies to the trade`;
+					btn.setAttribute('aria-label', btn.title);
 					btn.addEventListener('click', () => {
 						copiesOf(sel).forEach((a) => moveToTradeSafe(a.element));
 						afterTradeBatch();
@@ -1054,6 +1051,7 @@
 		trigger.className = 'sia-qs';
 		trigger.textContent = '⚡';
 		trigger.title = 'Quicksell: fetch buy orders and list this item';
+		trigger.setAttribute('aria-label', trigger.title);
 		trigger.addEventListener('click', async () => {
 			trigger.textContent = '…';
 			const ob = await fetchOrderbook(d.appid, d.market_hash_name);
@@ -1067,6 +1065,7 @@
 				const b = trigger.cloneNode();
 				b.textContent = `⚡${(ob.buyCents / 100).toFixed(2)}`;
 				b.title = 'Instant: list at the highest buy order';
+				b.setAttribute('aria-label', `List instantly at the highest buy order, ${b.textContent.slice(1)}`);
 				b.addEventListener('click', () => listOnMarket(item, ob.buyCents, 'instant'));
 				box.appendChild(b);
 			}
@@ -1074,6 +1073,7 @@
 				const u = trigger.cloneNode();
 				u.textContent = `↓${((ob.sellCents - 1) / 100).toFixed(2)}`;
 				u.title = 'Undercut: list 0.01 under the lowest listing';
+				u.setAttribute('aria-label', `Undercut the lowest listing, list at ${u.textContent.slice(1)}`);
 				u.addEventListener('click', () => listOnMarket(item, ob.sellCents - 1, 'undercut'));
 				box.appendChild(u);
 			}
@@ -2225,7 +2225,7 @@
 			'<span class="sia-break"></span>' +
 			// row 2: Add metal | Give dupes
 			(CONFIG.tradeMetalHelper
-				? `<input id="sia-metal-amount" type="text" placeholder="5.33" ` +
+				? `<input id="sia-metal-amount" type="text" placeholder="5.33" aria-label="Metal amount in ref" ` +
 					`title="Metal amount to add to the trade, e.g. 5.33">` +
 					`<button id="sia-metal-add" type="button">Add metal</button>`
 				: '') +
