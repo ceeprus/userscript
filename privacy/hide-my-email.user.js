@@ -226,8 +226,8 @@
   });
 
   setInterval(() => {
+    checkPendingHosts(); // also in hidden tabs, or elements removed meanwhile stay referenced
     if (document.hidden || !M) return;
-    checkPendingHosts();
     for (const root of roots) {
       if (root.host && !root.host.isConnected) continue;
       for (const el of root.querySelectorAll("input, textarea")) checkField(el);
