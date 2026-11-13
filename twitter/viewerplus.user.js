@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.33
+// @version      1.34
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -562,7 +562,7 @@
     const cached = blockOf.get(el);
     if (cached && cached.contains(el)) return cached;
     const h = el.getBoundingClientRect().height;
-    if (!h) return el; // not laid out yet; the next pass finds the real wrapper
+    if (!h) return null; // hidden or not laid out: styling now would cache a clipped size; a later pass gets it
     let top = el;
     while (!isBlock.has(top)) {
       const p = top.parentElement;
@@ -598,6 +598,7 @@
       tweet.querySelectorAll(MEDIA_SEL).forEach(el => {
         if (el.parentElement.closest(MEDIA_SEL)) return;
         const target = mediaBlock(el, tweet);
+        if (!target) return;
         // X's video player shrinks to a clipped box and keeps that size after unclipping, so pin its height.
         if (state.compact && !state.hideMedia && el.querySelector('[data-testid="videoPlayer"]')) {
           const h = el.getBoundingClientRect().height;
@@ -658,8 +659,14 @@
 
         let matched = false;
         FILTERS.forEach(f => {
-          // A link card can load after the first pass, so a post can move from text-only to media.
-          if (!info.cats[f.key]) { if (info.id) { seen[f.key].delete(info.id); hiddenIds[f.key].delete(info.id); } return; }
+          if (!info.cats[f.key]) {
+            // A link card can load after the first pass and move a post from text-only to media. Only these two:
+            // the pinned post also shows unpinned further down, and that copy must not uncount it.
+            if (info.id && (f.key === 'mediaposts' || f.key === 'textonly')) {
+              seen[f.key].delete(info.id); hiddenIds[f.key].delete(info.id);
+            }
+            return;
+          }
           if (info.id) addCapped(seen[f.key], info.id);
           if (state[f.key]) { matched = true; if (info.id) addCapped(hiddenIds[f.key], info.id); }
         });
