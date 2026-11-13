@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.18
+// @version      1.19
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -152,8 +152,10 @@
 
   function isHidden(slug) { return !!state.hidden[slug.toLowerCase()]; }
 
+  // Lists are re-read before every write: another open tab may have changed them since this one loaded.
   function setHidden(slug, on) {
     var k = slug.toLowerCase();
+    state.hidden = loadHidden();
     if (on) state.hidden[k] = 1; else delete state.hidden[k];
     store(HIDE_KEY, state.hidden);
   }
@@ -169,6 +171,7 @@
   // one term, or several at once when a pasted string carries commas
   function addTerms(text) {
     var added = false;
+    state.block = loadBlock();
     String(text || '').split(',').forEach(function (raw) {
       var t = raw.trim().toLowerCase();
       if (!t || state.block.indexOf(t) > -1) return;
@@ -180,6 +183,7 @@
   }
 
   function removeTerm(term) {
+    state.block = loadBlock();
     var i = state.block.indexOf(term);
     if (i < 0) return false;
     state.block.splice(i, 1);
@@ -428,6 +432,7 @@
 
   function setStarred(slug, on) {
     var k = slug.toLowerCase();
+    state.stars = loadStars();
     if (on) state.stars[k] = 1; else delete state.stars[k];
     store(STAR_KEY, state.stars);
   }
