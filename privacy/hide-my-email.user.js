@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Email
 // @namespace    cee
-// @version      2.4
+// @version      2.5
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -162,6 +162,17 @@
     else if (tag === "iframe" || tag === "frame") hookFrame(el);
     const sr = el.openOrClosedShadowRoot || el.shadowRoot;
     if (sr) watch(sr);
+    else if (tag.includes("-") && !el.matches(":defined")) pendingHosts.add(el);
+  }
+
+  // A custom element defined after it was inserted gets its shadow root on upgrade, which no observer reports.
+  const pendingHosts = new Set();
+  function checkPendingHosts() {
+    for (const el of pendingHosts) {
+      const sr = el.openOrClosedShadowRoot || el.shadowRoot;
+      if (sr) watch(sr);
+      if (sr || !el.isConnected || el.matches(":defined")) pendingHosts.delete(el);
+    }
   }
 
   function scan(root) {
@@ -215,7 +226,8 @@
   });
 
   setInterval(() => {
-    if (document.hidden) return;
+    if (document.hidden || !M) return;
+    checkPendingHosts();
     for (const root of roots) {
       if (root.host && !root.host.isConnected) continue;
       for (const el of root.querySelectorAll("input, textarea")) checkField(el);
