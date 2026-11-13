@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube: Hide Watched Videos
 // @namespace    https://www.haus.gg/
-// @version      6.31
+// @version      6.32
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @description  Hides watched videos, Shorts, Mixes, playlists, members-only videos, and subscribed channels from your YouTube feeds.
@@ -14,7 +14,7 @@
 // @match        https://*.youtube.com/*
 // @match        https://youtube.com/*
 // @noframes
-// @require      https://openuserjs.org/src/libs/sizzle/GM_config.js
+// @require      https://cdn.jsdelivr.net/gh/sizzlemctwizzle/GM_config@06f2015c04db3aaab9717298394ca4f025802873/gm_config.js#sha256=c8f95a548ad83bcc8d82d5c17b1cc76f953ef831a00ff94514ed5b7b76f75d91
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM.getValue
