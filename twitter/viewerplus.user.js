@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.35
+// @version      1.36
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu), a toggle to hide "Post Video" from the video right-click menu and one that gives photos the browser's own right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -643,8 +643,13 @@
       el.style.display = state.hidePostVideo ? 'none' : '';
     });
 
+    // On a profile's Replies tab nearly every post is a reply: hiding them empties the page and X then
+    // loads more forever. "Show only checked" (only replies there) is still fine.
+    const skipReplies = !state.invert && /\/with_replies\/?$/.test(location.pathname);
+    const on = k => state[k] && !(k === 'replies' && skipReplies);
+
     const box = document.getElementById(BOX_ID);
-    const anyFilterOn = !!box && FILTERS.some(f => state[f.key]);
+    const anyFilterOn = !!box && FILTERS.some(f => on(f.key));
 
     // Only scan/classify cells while filtering is engaged, plus one pass to restore when it stops.
     if (anyFilterOn || filtersWereActive) {
@@ -654,7 +659,7 @@
           // Non-tweet cell: "Show more replies" expanders track the replies filter.
           let hideCell = false;
           if (isReplyExpander(cell)) {
-            hideCell = state.invert ? (anyFilterOn && !state.replies) : state.replies;
+            hideCell = state.invert ? (anyFilterOn && !on('replies')) : on('replies');
           }
           cell.style.display = hideCell ? 'none' : '';
           return;
@@ -671,10 +676,10 @@
             return;
           }
           if (info.id) addCapped(seen[f.key], info.id);
-          if (state[f.key]) { matched = true; if (info.id) addCapped(hiddenIds[f.key], info.id); }
+          if (on(f.key)) { matched = true; if (info.id) addCapped(hiddenIds[f.key], info.id); }
         });
         // A reply's parent context counts with the replies filter.
-        if (info.replyContext && state.replies) matched = true;
+        if (info.replyContext && on('replies')) matched = true;
 
         const hide = state.invert ? (anyFilterOn && !matched) : matched;
         cell.style.display = hide ? 'none' : '';
