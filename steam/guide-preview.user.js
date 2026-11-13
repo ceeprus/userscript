@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Guide: Live Side Preview
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.06
+// @version      1.07
 // @description  Docks a live rendered preview to the right of the guide section editor, updating as you type. Reuses Steam's own bb_* styles and never touches the Edit/Preview/Changes tabs or the form fields.
 // @author       ceeprus
 // @match        https://steamcommunity.com/sharedfiles/editguidesubsection/*
@@ -94,7 +94,8 @@
         }
         case 'url': {
           var href = arg || plain(inner);
-          if (!/^[a-z]+:\/\//i.test(href) && !/^\//.test(href)) href = 'http://' + href;
+          // Only web and steam links: "javascript://..." also has a scheme and a double slash.
+          if (!/^(https?|steam):\/\//i.test(href) && !/^\//.test(href)) href = 'http://' + href;
           return '<a class="bb_link" href="' + esc(href) + '" target="_blank" rel="noopener">' + inner + '</a>';
         }
         case 'img': return '<img class="bb_img" src="' + esc(plain(inner)) + '" style="max-width:100%;">';
