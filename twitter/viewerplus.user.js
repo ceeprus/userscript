@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.34
-// @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
+// @version      1.35
+// @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu), a toggle to hide "Post Video" from the video right-click menu and one that gives photos the browser's own right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @match        https://x.com/*
@@ -70,6 +70,7 @@
     invert:         'M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z',
     fastRetweet:    'M7 2v11h3v9l7-12h-4l4-8z',
     hidePostVideo:  'M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z',
+    nativePhotoMenu: 'M3 3h18v4H3V3zm0 6h18v2H3V9zm0 4h18v2H3v-2zm0 4h12v2H3v-2z',
   };
 
   // Toggle state + cumulative id sets so counters survive node recycling. The sets are capped so
@@ -83,6 +84,7 @@
   state.invert = false; // when on, filters become "show only checked" instead of "hide checked"
   state.fastRetweet = false; // when on, the repost button confirms instantly, skipping the Quote menu
   state.hidePostVideo = false; // when on, removes "Post Video" from the video right-click menu
+  state.nativePhotoMenu = false; // when on, right-clicking a photo opens the browser's menu, not X's
 
   // Add to a Set, evicting the oldest entry if it would exceed ID_CAP (insertion order = age).
   function addCapped(set, id) {
@@ -182,6 +184,7 @@
       { key: 'invert',        label: 'Show only checked' },
       { key: 'fastRetweet',   label: 'Fast retweet' },
       { key: 'hidePostVideo', label: 'Hide Post Video' },
+      { key: 'nativePhotoMenu', label: 'Browser menu on photos' },
     ];
 
     body.appendChild(buildGroup('Filters', 'filters', headingTextEl, FILTERS, true));
@@ -720,6 +723,15 @@
       timer = setTimeout(stop, 1500); // give up if the menu never appears
     }, true);
   }
+
+  // X cancels the browser's menu on feed photos and draws its own (Copy photo link, Post Photo). A capture
+  // listener on window runs before X's handlers on its React root, so stopping the event there lets the
+  // browser's menu open on the photo's own <img>.
+  window.addEventListener('contextmenu', (e) => {
+    if (!state.nativePhotoMenu) return;
+    const t = e.target;
+    if (t && t.closest && t.closest('[data-testid="tweetPhoto"] img')) e.stopImmediatePropagation();
+  }, true);
 
   let scheduled = false;
   function schedule() {
