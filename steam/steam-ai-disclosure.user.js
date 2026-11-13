@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.42
+// @version      2.43
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure": a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -254,8 +254,8 @@
         .sgai_packed .carousel__slider-tray{width:calc(var(--sgai-m) / var(--sgai-v) * 100%) !important;
             transform:translateX(calc(var(--sgai-i) / var(--sgai-m) * -100%)) !important;}
         .sgai_packed .carousel__slider-tray > .carousel__slide{width:calc(100% / var(--sgai-m)) !important;}
-        .sgai_packed [data-sgai-thumb]{left:calc(var(--sgai-i) / var(--sgai-m) * 100%) !important;
-            right:calc((1 - (var(--sgai-i) + var(--sgai-t)) / var(--sgai-m)) * 100%) !important;}
+        .sgai_packed [data-sgai-thumb]{inset-inline-start:calc(var(--sgai-i) / var(--sgai-m) * 100%) !important;
+            inset-inline-end:calc((1 - (var(--sgai-i) + var(--sgai-t)) / var(--sgai-m)) * 100%) !important;}
         .sgai_packed [data-sgai-zone="prev"]{width:calc((var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m) * 100%) !important;}
         .sgai_packed [data-sgai-zone="next"]{width:calc((1 - (var(--sgai-i) + var(--sgai-t) / 2) / var(--sgai-m)) * 100%) !important;}
         .sgai_pack_none .carousel__back-button,.sgai_pack_none .carousel__next-button{visibility:hidden !important;pointer-events:none !important;}
@@ -1518,7 +1518,9 @@ ${SIGNATURE}`;
         }
         const f = box.querySelector('.tab_preview.focus');
         if (!gone || !f || !f.closest(gone)) return;
-        const row = [...document.querySelectorAll('.tab_content a.tab_row_item')].find(r => r.getClientRects().length && !allGone(r, gone));
+        // The first tab sits in .home_tab_content since 2026-11, the rest still in .tab_content.
+        const row = [...document.querySelectorAll('.home_tab_content a.tab_row_item, .tab_content a.tab_row_item')]
+            .find(r => r.getClientRects().length && !allGone(r, gone));
         if (row) row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     }
 
@@ -1583,11 +1585,13 @@ ${SIGNATURE}`;
             if (Math.sign(i - +wasI) === dir && i < N - V && +wasI < N - V) root.dataset.sgaiStep = Math.abs(i - +wasI);
         }
         // The thumb and its click zones, found by what they are rather than by Steam's hashed class
-        // names: the thumb is the one element beside the strip placed by both left and right.
-        for (const el of root.querySelectorAll('[style*="left"], [style*="right"]')) {
+        // names: the thumb is the one element beside the strip placed by both ends. Steam moved from
+        // left/right to inset-inline in 2026-11; both are read.
+        for (const el of root.querySelectorAll('[style*="left"], [style*="right"], [style*="inset"]')) {
             if (el.closest('.carousel__slider')) continue;
             const st = el.style;
-            if (st.left.endsWith('%') && st.right.endsWith('%')) el.dataset.sgaiThumb = '';
+            const start = st.insetInlineStart || st.left, end = st.insetInlineEnd || st.right;
+            if (start.endsWith('%') && end.endsWith('%')) el.dataset.sgaiThumb = '';
             else if (st.width.endsWith('%') && el.querySelector('.carousel__back-button')) el.dataset.sgaiZone = 'prev';
             else if (st.width.endsWith('%') && el.querySelector('.carousel__next-button')) el.dataset.sgaiZone = 'next';
         }
