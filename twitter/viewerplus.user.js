@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.32
+// @version      1.33
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu) and a toggle to hide "Post Video" from the video right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       Cee
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -553,16 +553,26 @@
     return /show\s+(?:more|additional|this)\b[^]*?(?:repl|thread)/i.test(cell.textContent || '');
   }
 
-  // Media height is reserved by a padding-bottom spacer, so resize that container, not the leaf.
-  function aspectContainer(mediaEl) {
-    let el = mediaEl;
-    for (let i = 0; i < 10 && el && el.parentElement; i++) {
-      const parent = el.parentElement;
-      if (parent.matches && parent.matches('[data-testid="tweet"], article')) break;
-      if (parent.querySelector(':scope > div[style*="padding-bottom"]')) return parent;
-      el = parent;
+  // X fixes the media height on several wrappers (multi-photo posts are a swipe carousel), so clip or hide
+  // the topmost wrapper that is still just the media. Found once while unstyled, then cached: once a
+  // carousel's first photo is clipped its ancestors shrink and a fresh walk would climb into the post.
+  const blockOf = new WeakMap();
+  const isBlock = new WeakSet();
+  function mediaBlock(el, tweet) {
+    const cached = blockOf.get(el);
+    if (cached && cached.contains(el)) return cached;
+    const h = el.getBoundingClientRect().height;
+    if (!h) return el; // not laid out yet; the next pass finds the real wrapper
+    let top = el;
+    while (!isBlock.has(top)) {
+      const p = top.parentElement;
+      if (!p || p === tweet || p.getBoundingClientRect().height > h + 12 ||
+          p.querySelector('[data-testid="tweetText"], [data-testid="User-Name"]')) break;
+      top = p;
     }
-    return null;
+    blockOf.set(el, top);
+    isBlock.add(top);
+    return top;
   }
 
   function applyTweetMods() {
@@ -584,10 +594,17 @@
         });
       }
 
-      // Media (photos, videos, link-card embeds)
+      // Media (photos, videos, link-card embeds). Outermost block only: a video's videoComponent sits inside its tweetPhoto.
       tweet.querySelectorAll(MEDIA_SEL).forEach(el => {
-        const target = aspectContainer(el) || el;
-        if (target !== el) { el.style.maxHeight = ''; el.style.overflow = ''; } // size the container
+        if (el.parentElement.closest(MEDIA_SEL)) return;
+        const target = mediaBlock(el, tweet);
+        // X's video player shrinks to a clipped box and keeps that size after unclipping, so pin its height.
+        if (state.compact && !state.hideMedia && el.querySelector('[data-testid="videoPlayer"]')) {
+          const h = el.getBoundingClientRect().height;
+          if (!el.style.height && h) el.style.height = h + 'px';
+        } else {
+          el.style.height = '';
+        }
         if (state.hideMedia) {
           target.style.display = 'none';
           target.style.maxHeight = ''; target.style.overflow = '';
@@ -641,7 +658,8 @@
 
         let matched = false;
         FILTERS.forEach(f => {
-          if (!info.cats[f.key]) return;
+          // A link card can load after the first pass, so a post can move from text-only to media.
+          if (!info.cats[f.key]) { if (info.id) { seen[f.key].delete(info.id); hiddenIds[f.key].delete(info.id); } return; }
           if (info.id) addCapped(seen[f.key], info.id);
           if (state[f.key]) { matched = true; if (info.id) addCapped(hiddenIds[f.key], info.id); }
         });
