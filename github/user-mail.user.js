@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.3.0
+// @version      5.3.1
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
 // @author       cee
@@ -331,6 +331,7 @@
             if (stale()) return;
             if (res.status !== 200) {
               applyState('error');
+              if (res.status === 403) labelEl.textContent = 'patch too large'; // GitHub refuses .patch for huge commits
               return;
             }
 
