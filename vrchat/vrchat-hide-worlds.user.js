@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.33
+// @version      1.34
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -509,6 +509,10 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const isHidden = (id) => Object.hasOwn(hidden, id);
 
 	const persistHidden = () => stateSet(KEY_HIDDEN, JSON.stringify(hidden));
+	// Re-read before every change: another open tab may have hidden worlds since this one loaded.
+	const reloadHidden = async () => {
+		hidden = parseStored(await stateGet(KEY_HIDDEN, '{}'));
+	};
 
 	const parseStored = (raw) => {
 		if (!raw) return {};
@@ -811,6 +815,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 		// card nodes between rows, and a stale closure would hide the wrong world.
 		const id = card.dataset.vrcwhId;
 		if (!id) return;
+		await reloadHidden();
 
 		if (isHidden(id)) {
 			delete hidden[id];
@@ -938,6 +943,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	const togglePageWorld = async (title) => {
 		const id = worldIdFrom(location.pathname);
 		if (!id) return;
+		await reloadHidden();
 
 		if (isHidden(id)) {
 			delete hidden[id];
