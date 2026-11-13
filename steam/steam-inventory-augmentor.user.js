@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.3
+// @version      3.28.4
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -12,6 +12,8 @@
 // @grant        unsafeWindow
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      backpack.tf
 // @connect      raw.githubusercontent.com
 // @connect      github.com
@@ -58,6 +60,19 @@
 		updateURL: 'https://raw.githubusercontent.com/ceeprus/userscript/main/steam/steam-inventory-augmentor.user.js',
 	};
 	try { Object.assign(CONFIG, JSON.parse(localStorage.getItem('siaSettings')) || {}); } catch { /* defaults */ }
+	// The bp.tf key goes in script storage when the manager has it: page localStorage is readable by every
+	// script on steamcommunity.com. Copied first, removed second, so a failure never loses it.
+	if (typeof GM_getValue === 'function') {
+		if (CONFIG.backpackTfKey) {
+			GM_setValue('backpackTfKey', CONFIG.backpackTfKey);
+			try {
+				const s = JSON.parse(localStorage.getItem('siaSettings')) || {};
+				delete s.backpackTfKey;
+				localStorage.setItem('siaSettings', JSON.stringify(s));
+			} catch { /* stays in localStorage too; script storage wins from now on */ }
+		}
+		CONFIG.backpackTfKey = GM_getValue('backpackTfKey', '');
+	}
 
 	const METAL_REF = { 'Refined Metal': 1, 'Reclaimed Metal': 1 / 3, 'Scrap Metal': 1 / 9 };
 
@@ -1758,6 +1773,11 @@
 				row.append(eye, check, status);
 			}
 			input.addEventListener('change', () => {
+				if (key === 'backpackTfKey' && typeof GM_setValue === 'function') {
+					GM_setValue(key, input.value.trim());
+					document.getElementById('sia-settings-note').style.display = '';
+					return;
+				}
 				if (type === 'number') {
 					const n = Number(input.value);
 					// empty or garbage would save 0 (a zero cooldown hammers Steam): keep the old value
