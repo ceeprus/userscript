@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.44
+// @version      2.45
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure": a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -1922,11 +1922,33 @@ ${SIGNATURE}`;
         hoverBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') act(e); });
         hoverBtn.addEventListener('pointerenter', () => clearTimeout(hoverHideTimer));
         hoverBtn.addEventListener('pointerleave', () => hideHoverSoon());
+        for (const type of ['pointerout', 'mouseout']) hoverBtn.addEventListener(type, replayLeave);
         // Steam's hover preview is a popover, and the top layer beats any z-index we could pick.
         // Being a popover ourselves is the only way to sit above it; harmless where unsupported.
         hoverBtn.setAttribute('popover', 'manual');
         document.body.appendChild(hoverBtn);
         return hoverBtn;
+    }
+    // Our button is not inside Steam's hover preview, so reaching for it counted as leaving the preview
+    // and the preview collapsed under the pointer. Steam doesn't hear that leave; it hears the real one,
+    // replayed from where the pointer was, once the pointer moves off the button.
+    let heldFrom = null;
+    for (const type of ['pointerout', 'pointerleave', 'mouseout', 'mouseleave']) addEventListener(type, e => {
+        if (!hoverBtn || !e.isTrusted || !e.relatedTarget || !hoverBtn.contains(e.relatedTarget) || hoverBtn.contains(e.target)) return;
+        if (type.endsWith('out')) heldFrom = e.target;
+        e.stopImmediatePropagation();
+    }, true);
+    function replayLeave(e) {
+        const from = heldFrom, to = e.relatedTarget;
+        if (!e.isTrusted || !from || !from.isConnected || (to && hoverBtn.contains(to))) return;
+        if (e.type === 'mouseout') heldFrom = null;          // the browser sends pointerout first, mouseout last
+        const pointer = e.type === 'pointerout';
+        const make = (t, bubbles) => pointer
+            ? new PointerEvent(t, { bubbles, composed: true, relatedTarget: to, clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: e.pointerType, isPrimary: e.isPrimary })
+            : new MouseEvent(t, { bubbles, composed: true, relatedTarget: to, clientX: e.clientX, clientY: e.clientY });
+        from.dispatchEvent(make(pointer ? 'pointerout' : 'mouseout', true));
+        for (let n = from; n && n.nodeType === 1 && !(to && n.contains(to)); n = n.parentElement)
+            n.dispatchEvent(make(pointer ? 'pointerleave' : 'mouseleave', false));
     }
     // The top layer is ordered by who showed last, so when Steam's preview popover covers us we show
     // ours again. Their preview lands a moment after the pointer, hence the re-checks.
@@ -1997,14 +2019,24 @@ ${SIGNATURE}`;
 
     // Beside the game's name wherever Steam shows it (its own hover preview included), else
     // beside the wishlist star, matched to the star's size, else the capsule's own corner.
+    // Every name seen for the hovered game, kept until the pointer reaches another game: a part of
+    // Steam's preview without the capsule picture has no alt, and the button would jump away from the name.
+    let spotNames = { id: null, set: new Set() };
     function buttonSpot(el, id) {
-        const names = [titleNear(el), (cacheGet(id) || {}).name, hidden[id], capsuleAlt(el)];
+        if (spotNames.id !== id) spotNames = { id, set: new Set() };
+        const full = (cacheGet(id) || {}).name;
+        const alts = [capsuleAlt(el)];
         const roots = [];
         if (POPOVERS) for (const p of document.querySelectorAll('[popover]')) {
             if (p === hoverBtn || !p.matches(':popover-open')) continue;
-            if ([...p.querySelectorAll('a[href*="/app/"]')].some(a => appIdOf(a) === id)) roots.push(p);   // Steam's preview for this game
+            const own = [...p.querySelectorAll('a[href*="/app/"]')].filter(a => appIdOf(a) === id);
+            if (!own.length) continue;
+            roots.push(p);                                   // Steam's preview for this game, and its capsule's alt
+            alts.push(...own.map(capsuleAlt));
         }
         roots.push(el);
+        for (const n of [titleNear(el), full, full && full + ' Demo', hidden[id], ...alts]) if (n) spotNames.set.add(n);
+        const names = [...spotNames.set];
         for (const root of roots) {
             const r = nameSpot(root, names);
             if (r) return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
@@ -2035,7 +2067,7 @@ ${SIGNATURE}`;
         const free = (x, y) => {
             if (y < 0 || y + spot.size > innerHeight || x < 0 || x + spot.size > innerWidth) return false;
             const e = document.elementsFromPoint(x + spot.size / 2, y + spot.size / 2).find(n => !n.closest('.sgai_hide'));
-            if (!e || e.closest('[popover]:popover-open')) return true;
+            if (!e || (POPOVERS && e.closest('[popover]:popover-open'))) return true;
             if (!hoverEl.contains(e)) return false;
             // Inside the card, but on one of Steam's controls: "Find More like this", the star.
             const ctl = e.closest('a[href], button, [role="button"]');
