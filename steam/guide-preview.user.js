@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Guide: Live Side Preview
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.07
+// @version      1.08
 // @description  Docks a live rendered preview to the right of the guide section editor, updating as you type. Reuses Steam's own bb_* styles and never touches the Edit/Preview/Changes tabs or the form fields.
 // @author       ceeprus
 // @match        https://steamcommunity.com/sharedfiles/editguidesubsection/*
@@ -240,7 +240,9 @@
     addStyle([
       '.gp-panel{position:fixed;top:0;right:0;height:100vh;z-index:99998;display:flex;flex-direction:column;',
       '  background:#1b2838;border-left:1px solid #000;box-shadow:-6px 0 22px rgba(0,0,0,.55);',
-      '  font-family:"Motiva Sans",Arial,Helvetica,sans-serif;color:#c6d4df;text-align:left;transition:transform .15s ease;}',
+      '  font-family:"Motiva Sans",Arial,Helvetica,sans-serif;color:#c6d4df;text-align:left;animation:gp-in .2s cubic-bezier(.22,1,.36,1);}',
+      '@keyframes gp-in{from{opacity:0;transform:translateX(24px);}}',
+      '@media (prefers-reduced-motion:reduce){.gp-panel{animation:none;}}',
       '.gp-panel.gp-hidden{display:none;}',
       '.gp-head{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 10px;',
       '  background:linear-gradient(90deg,#2a475e,#1b2838);border-bottom:1px solid #000;}',
