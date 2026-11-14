@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.43
+// @version      2.44
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure": a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -175,8 +175,8 @@
         .sgai_dh::after{content:"AI";display:inline-block;margin-left:10px;padding:3px 5px;
             font:700 11px/1 "Motiva Sans",Arial,sans-serif;letter-spacing:.7px;text-transform:uppercase;
             color:${ACCENT};background:rgba(0,0,0,.85);border-radius:2px;vertical-align:1px;}  /* caps 10px: 5 - 4 */
-        /* Title badge clicked: pulse the box twice, starting once the scroll has mostly landed. */
-        .sgai_flash{animation:sgai_flash .9s ease-in-out .35s 2;}
+        /* Title badge clicked: pulse the box once, starting once the scroll has mostly landed. */
+        .sgai_flash{animation:sgai_flash .6s ease-in-out .35s;}
         @keyframes sgai_flash{50%{background:rgba(255,206,92,.22);box-shadow:0 0 0 3px rgba(255,206,92,.55);}}
         [data-sgai-mode="skip"] .sgai_cap{display:none !important;}
         /* Hiding a game by hand: one button that follows the pointer to the capsule under it, so
@@ -185,6 +185,10 @@
             box-sizing:border-box;width:22px;height:22px;border-radius:2px;cursor:pointer;
             background:rgba(0,0,0,.85);color:#fff;opacity:0;visibility:hidden;transition:opacity .12s;}
         .sgai_hide.sgai_on{opacity:1;visibility:visible;}
+        /* Drawn at 22px to match Steam's star; the hit area reaches 4px past it. */
+        .sgai_hide::after,.sgai_title_hide::after{content:"";position:absolute;inset:-4px;}
+        .sgai_hide:active,.sgai_title_hide:active{transform:scale(.97);}
+        @media (prefers-reduced-motion:reduce){.sgai_hide:active,.sgai_title_hide:active{transform:none;}}
         .sgai_hide:hover{background:rgba(0,0,0,.97);}
         .sgai_hide svg{display:block;width:64%;height:64%;}   /* it takes the wishlist star size beside one */
         .sgai_hide_on{color:${RED};}
