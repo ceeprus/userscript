@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AniList BTVA Connector
 // @namespace    https://github.com/ceeprus
-// @version      1.0.7
+// @version      1.0.8
 // @description  Swap a voice actor's AniList roles for their Behind The Voice Actors roles: games, dubs, movies and more
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=anilist.co
 // @author       Cee
@@ -307,6 +307,15 @@
             if (e.key === 'Escape') closeMenu();
         });
         document.addEventListener('click', e => { if (!sort.contains(e.target)) closeMenu(); }, { signal: menuClose.signal });
+        // After "Open BTVA" the Cloudflare cookie exists; retry as soon as the user is back on this tab.
+        const retryBlocked = () => {
+            if (document.hidden || !st.on || st.data?.state !== 'blocked') return;
+            st.data = null;
+            load();
+            render();
+        };
+        document.addEventListener('visibilitychange', retryBlocked, { signal: menuClose.signal });
+        window.addEventListener('focus', retryBlocked, { signal: menuClose.signal });
 
         function sync() {
             const a = aniRoles();
@@ -392,7 +401,7 @@
             const d = st.data;
             if (!d) return panel.append(note(st.step === 'rest' ? 'Loading more roles…' : 'Loading BTVA roles…'));
             if (d.state === 'error') return panel.append(note('Couldn\'t load BTVA roles. Switch again to retry.'));
-            if (d.state === 'blocked') return panel.append(note('BTVA needs one visit before roles can load. ', link('Open BTVA', d.url)));
+            if (d.state === 'blocked') return panel.append(note('BTVA needs one visit before roles can load. ', link('Open BTVA', d.url), ' Roles load when you come back to this tab.'));
             if (d.state === 'notfound') return panel.append(note('No BTVA page found for this person. ', fixLink()));
 
             const counts = tabCounts(d.roles);
