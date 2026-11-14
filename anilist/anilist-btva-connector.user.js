@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AniList BTVA Connector
 // @namespace    https://github.com/ceeprus
-// @version      1.0.8
+// @version      1.0.9
 // @description  Swap a voice actor's AniList roles for their Behind The Voice Actors roles: games, dubs, movies and more
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=anilist.co
 // @author       Cee
@@ -138,15 +138,18 @@
         if (cached && deps.now() - cached.at < DAY) return cached.notfound ? { state: 'notfound' } : { state: 'ok', url: cached.url, roles: cached.roles };
 
         // Yesterday's roles beat an error message when BTVA is blocked or down.
-        const fail = r => (cached && cached.roles ? { state: 'ok', url: cached.url, roles: cached.roles } : r);
+        const fail = (r, why) => {
+            console.warn('[BTVA Connector]', r.state + ':', why); // the only clue when one browser works and another doesn't
+            return cached && cached.roles ? { state: 'ok', url: cached.url, roles: cached.roles } : r;
+        };
         const pin = deps.gmGet('btvaPin:' + staff.id, '');
         const urls = pin ? [pin] : slugCandidates(staff.name).map(s => BTVA + s + '/');
         try {
             for (const url of urls) {
                 const res = await deps.gmRequest({ method: 'GET', url });
-                if (isChallenge(res)) return fail({ state: 'blocked', url });
+                if (isChallenge(res)) return fail({ state: 'blocked', url }, 'GET ' + res.status + ' ' + url);
                 if (res.status === 404) continue;
-                if (res.status !== 200) return fail({ state: 'error' });
+                if (res.status !== 200) return fail({ state: 'error' }, 'GET ' + res.status + ' ' + url);
                 const page = parseBtvaPage(res.responseText, url);
                 if (!page) continue;
                 if (!pin && !nativeMatches(staff.name.native, page.native, staff.name.full, page.name)) continue;
@@ -159,7 +162,7 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     overrideMimeType: 'text/html; charset=windows-1252', // served as ISO-8859-1
                 });
-                if (rest.status !== 200 || isChallenge(rest)) return fail({ state: 'blocked', url });
+                if (rest.status !== 200 || isChallenge(rest)) return fail({ state: 'blocked', url }, 'POST ' + rest.status);
                 const seen = new Set();
                 const roles = [...page.roles, ...parseRoles(rest.responseText, url)]
                     .filter(r => !seen.has(r.charUrl) && seen.add(r.charUrl));
@@ -172,7 +175,7 @@
                 return { state: 'ok', url, roles };
             }
         } catch (e) {
-            return fail({ state: 'blocked', url: urls[0] });
+            return fail({ state: 'blocked', url: urls[0] }, e);
         }
         // A miss costs up to four page requests; remember it so the next click sends none. Fix link clears it.
         deps.gmSet(key, { at: deps.now(), notfound: true });
