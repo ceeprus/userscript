@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.3.1
+// @version      5.3.2
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
 // @author       cee
@@ -323,6 +323,7 @@
       GM_xmlhttpRequest({
         method: 'GET',
         url,
+        timeout: 20000, // a stalled connection would leave the pill on "fetching" forever
         onload(res) {
           if (stale()) return;
           applyState('parsing');
@@ -355,6 +356,11 @@
         },
         onerror() {
           if (!stale()) applyState('error');
+        },
+        ontimeout() {
+          if (stale()) return;
+          applyState('error');
+          labelEl.textContent = 'timed out';
         },
       });
     }, 150); // waiting flash duration
