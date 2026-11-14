@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.4
+// @version      3.28.5
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -127,6 +127,8 @@
 			padding: 2px 4px; width: 60px; }
 		#sia-bar button { background: rgba(103, 112, 123, .2); color: #d2d8de; border: 0;
 			border-radius: 2px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+		#sia-bar button:active { transform: scale(.97); }
+		@media (prefers-reduced-motion: reduce) { #sia-bar button:active { transform: none; } }
 		#sia-bar button:hover { background: rgba(103, 112, 123, .45); color: #fff; }
 		#sia-bar button:focus-visible, #sia-bar select:focus-visible, #sia-bar input:focus-visible,
 		#sia-settings :focus-visible { outline: 2px solid #67c1f5; outline-offset: 1px; }
@@ -141,7 +143,8 @@
 		#sia-value-top { position: absolute; top: 36px; right: 10px; z-index: 50;
 			background: rgba(0, 0, 0, .4); border: 1px solid #262a2e;
 			border-radius: 3px; padding: 6px 10px; text-align: right;
-			color: #b8b6b4; font: 12px "Motiva Sans", Arial, sans-serif; }
+			color: #b8b6b4; font: 12px "Motiva Sans", Arial, sans-serif;
+			font-variant-numeric: tabular-nums; }
 		#sia-value-top .sia-vc-metal { color: #d5d3d1; white-space: nowrap; }
 		#sia-value-top .sia-vc-money { color: #9CC83B; font-size: 16px; font-weight: bold;
 			margin-top: 2px; display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
@@ -153,7 +156,7 @@
 		#sia-value-top .sia-vc-note { color: #8f98a0; font-size: 10px; margin-top: 2px; }
 		.sia-progressbar { height: 3px; margin-top: 3px; border-radius: 2px;
 			background: rgba(255,255,255,.12); overflow: hidden; }
-		.sia-progressbar > div { height: 100%; background: #66c0f4; transition: width .5s; }
+		.sia-progressbar > div { height: 100%; background: #66c0f4; }
 		.sia-vc-note { position: relative; cursor: default; }
 		.sia-queue-tip { display: none; position: absolute; right: 0; top: 100%; z-index: 210;
 			background: #3d4450; border: 1px solid #262a2e; border-radius: 3px;
