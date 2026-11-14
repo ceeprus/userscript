@@ -26,4 +26,9 @@ Click a script name to install it. If you have [Violentmonkey](https://violentmo
 
 ## Steam Inventory Augmentor: backpack.tf key
 
-Ref/key pricing needs a free backpack.tf API key: log into [backpack.tf](https://backpack.tf) with Steam → Settings → [API Access](https://backpack.tf/developer) → register a key (any site name works) → open your Steam inventory, click the script's ⚙ button, paste the key under Pricing → reload. The key stays in your browser only.
+Ref/key pricing needs a free backpack.tf API key. The key stays in your browser only.
+
+1. Log into [backpack.tf](https://backpack.tf) with Steam.
+2. Open Settings, then [API Access](https://backpack.tf/developer), and register a key. Any site name works.
+3. Open your Steam inventory, click the script's ⚙ button and paste the key under Pricing.
+4. Reload the page.
