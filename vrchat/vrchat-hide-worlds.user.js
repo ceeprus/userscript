@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.34
+// @version      1.35
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -300,6 +300,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 	color: #fff;
 	display: flex;
 	font-size: 11px;
+	font-variant-numeric: tabular-nums;
 	font-weight: 700;
 	height: 22px;
 	justify-content: center;
@@ -489,6 +490,11 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 .VRCWH-CHECK:focus-visible {
 	outline: 2px solid #4fc3d9;
 	outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.VRCWH-WORLD-DIMMED, .VRCWH-PAGE-BTN, .VRCWH-BTN, .VRCWH-FAB, .VRCWH-JOIN { transition: none }
+	.VRCWH-BTN:active, .VRCWH-FAB:active, .VRCWH-JOIN:active { transform: none }
 }
 `);
 
