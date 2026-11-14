@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Email
 // @namespace    cee
-// @version      2.5
+// @version      2.6
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -278,7 +278,15 @@
       button:not(.primary):hover{background:${c.field}!important}
       .primary:hover{opacity:.88}
       .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-      @media (pointer:coarse){button,input[type=text]{min-height:44px}.close{min-width:44px}}`,
+      @media (pointer:coarse){button,input[type=text]{min-height:44px}.close{min-width:44px}}
+      button{transition:transform 90ms ease-out}
+      button:active{transform:scale(.97)}
+      .panel{transform-origin:top right;animation:hme-in 180ms cubic-bezier(.22,1,.36,1)}
+      @keyframes hme-in{from{opacity:0;transform:scale(.95)}}
+      input[aria-invalid=true]{border-color:${c.danger}!important}
+      .added{animation:hme-added 600ms ease-out}
+      @keyframes hme-added{from{background:${c.field}}}
+      @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}button:active{transform:none}}`,
     );
 
     const termIn = h("input", fieldCss, { id: "hme-term", type: "text", placeholder: "name@example.com", autocomplete: "off", spellcheck: false });
@@ -293,6 +301,8 @@
 
     const blurTerm = () => (termIn.style.filter = reveal.checked || !termIn.value ? "" : "blur(4px)");
     termIn.addEventListener("input", blurTerm);
+    for (const field of [termIn, aliasIn]) field.addEventListener("input", () => field.removeAttribute("aria-invalid"));
+    let added = new Set();
 
     // Same grey as the editor mask, and the same width for every entry so the bar does not give away the length.
     function masked(term) {
@@ -316,25 +326,28 @@
           return h(
             "li",
             `display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid ${c.line};`,
-            null,
+            added.has(e.term.toLowerCase()) ? { className: "added" } : null,
             h("span", `${font}flex:0 0 auto;max-width:45%;font-weight:600;color:${c.fg};overflow-wrap:anywhere;`, { textContent: e.alias }),
             h("span", `${font}flex:1 1 0;min-width:0;color:${c.muted};overflow-wrap:anywhere;`, null, masked(e.term)),
             remove,
           );
         }),
       );
+      added = new Set();
       if (!entries.length) list.append(h("li", `${font}padding:12px 0 4px;color:${c.muted};`, { textContent: "Nothing hidden yet. Type an address above and press Hide." }));
     };
 
-    function fail(message) {
+    function fail(message, field) {
       error.textContent = message;
       error.hidden = false;
+      field.setAttribute("aria-invalid", "true");
+      field.focus();
     }
 
     function add() {
       const terms = termIn.value.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
       if (!terms.length) return termIn.focus();
-      if (terms.some((t) => t.length < MIN_LENGTH)) return fail(`Each entry needs at least ${MIN_LENGTH} characters.`);
+      if (terms.some((t) => t.length < MIN_LENGTH)) return fail(`Each entry needs at least ${MIN_LENGTH} characters.`, termIn);
       const next = entries.slice();
       for (const term of terms) {
         const alias = (terms.length === 1 && aliasIn.value.trim()) || `email${next.length + 1}`;
@@ -342,9 +355,12 @@
         if (i >= 0) next[i] = { term, alias };
         else next.push({ term, alias });
       }
-      if (hasLoop(next)) return fail('The "Show it as" text contains one of your hidden words, so it would get hidden too. Use different text.');
+      if (hasLoop(next)) return fail('The "Show it as" text contains one of your hidden words, so it would get hidden too. Use different text.', aliasIn);
       error.hidden = true;
+      termIn.removeAttribute("aria-invalid");
+      aliasIn.removeAttribute("aria-invalid");
       termIn.value = aliasIn.value = "";
+      added = new Set(terms.map((t) => t.toLowerCase()));
       save(next);
       termIn.focus();
     }
@@ -365,7 +381,7 @@
     const box = h(
       "div",
       `${font}box-sizing:border-box;max-height:calc(100vh - 32px);overflow:auto;padding:14px 16px 16px;border:1px solid ${c.edge};border-radius:10px;background:${c.bg};color:${c.fg};box-shadow:0 8px 28px rgba(0,0,0,.3);`,
-      { role: "dialog" },
+      { role: "dialog", className: "panel" },
       h("div", "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;", null, title, closeBtn),
       h("label", labelCss, { htmlFor: "hme-term", textContent: "Email or word to hide" }),
       termIn,
