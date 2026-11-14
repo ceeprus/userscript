@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AniList BTVA Connector
 // @namespace    https://github.com/ceeprus
-// @version      1.0.9
+// @version      1.0.10
 // @description  Swap a voice actor's AniList roles for their Behind The Voice Actors roles: games, dubs, movies and more
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=anilist.co
 // @author       Cee
@@ -383,6 +383,10 @@
             img.alt = '';
             img.className = 'image loaded';
             img.src = httpsOnly(r.thumb);
+            // Firefox sends no BTVA cookie with page images, so Cloudflare can refuse them; the manager's request carries it.
+            if (img.src) img.addEventListener('error', () => deps.gmRequest({ method: 'GET', url: img.src, responseType: 'blob' })
+                .then(res => { if (res.status === 200 && res.response) img.src = URL.createObjectURL(res.response); })
+                .catch(() => {}), { once: true });
             const name = c.querySelector('.titles > .title');
             const roleTpl = name.querySelector('.role');
             setLink(name, r.charUrl);
@@ -535,6 +539,6 @@
     // == end ui ==
 
     if (typeof GM_xmlhttpRequest === 'function') {
-        boot({ loadBtva, fetchStaff, prompt: (msg, def) => window.prompt(msg, def), gmSet: GM_setValue, gmDelete: GM_deleteValue });
+        boot({ loadBtva, fetchStaff, prompt: (msg, def) => window.prompt(msg, def), gmSet: GM_setValue, gmDelete: GM_deleteValue, gmRequest: realDeps().gmRequest });
     }
 })();
