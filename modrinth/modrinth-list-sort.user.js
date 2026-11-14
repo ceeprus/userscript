@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.19
+// @version      1.20
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       Cee
@@ -825,6 +825,11 @@
     '.mrsort-filter:focus-within{outline:2px solid var(--color-brand,#1bd96a);outline-offset:1px}',
     '.mrsort-modlist-input:focus{border-color:var(--color-brand,#1bd96a)}',
     '.mrsort-hide:focus-visible,.mrsort-star:focus-visible,.mrsort-depbtn:focus-visible,.mrsort-pill:focus-visible,.mrsort-sentinel:focus-visible,.mrsort .mrsort-chip-x:focus-visible{opacity:1;outline:2px solid var(--color-brand,#1bd96a);outline-offset:1px}',
+    // bigger click target than the 18px icon, same look
+    '.mrsort-hide:not(.mrsort-hide--float),.mrsort-star,.mrsort-depbtn{position:relative}',
+    '.mrsort-hide::after,.mrsort-star::after,.mrsort-depbtn::after{content:"";position:absolute;inset:-4px}',
+    '.mrsort-btn:active,.mrsort-pill:active,.mrsort-sentinel:active,.mrsort-hide:active,.mrsort-star:active,.mrsort-depbtn:active{transform:scale(.97)}',
+    '@media (prefers-reduced-motion:reduce){.mrsort-switch,.mrsort-switch-knob{transition:none!important}.mrsort-btn:active,.mrsort-pill:active,.mrsort-sentinel:active,.mrsort-hide:active,.mrsort-star:active,.mrsort-depbtn:active{transform:none}}',
     '.mrsort-card-dim{opacity:.4}',
     '.mrsort-card-dim .mrsort-hide{opacity:1;color:var(--color-brand,#1bd96a)}'
   ].join('\n');
