@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AniList BTVA Connector
 // @namespace    https://github.com/ceeprus
-// @version      1.0.10
+// @version      1.0.12
 // @description  Swap a voice actor's AniList roles for their Behind The Voice Actors roles: games, dubs, movies and more
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=anilist.co
 // @author       Cee
@@ -162,7 +162,8 @@
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     overrideMimeType: 'text/html; charset=windows-1252', // served as ISO-8859-1
                 });
-                if (rest.status !== 200 || isChallenge(rest)) return fail({ state: 'blocked', url }, 'POST ' + rest.status);
+                if (isChallenge(rest)) return fail({ state: 'blocked', url }, 'POST ' + rest.status);
+                if (rest.status !== 200) return fail({ state: 'error' }, 'POST ' + rest.status);
                 const seen = new Set();
                 const roles = [...page.roles, ...parseRoles(rest.responseText, url)]
                     .filter(r => !seen.has(r.charUrl) && seen.add(r.charUrl));
@@ -175,7 +176,7 @@
                 return { state: 'ok', url, roles };
             }
         } catch (e) {
-            return fail({ state: 'blocked', url: urls[0] }, e);
+            return fail({ state: 'error' }, e); // offline, timeout or a parser bug: a Cloudflare refusal arrives as a 403 response
         }
         // A miss costs up to four page requests; remember it so the next click sends none. Fix link clears it.
         deps.gmSet(key, { at: deps.now(), notfound: true });
@@ -187,12 +188,12 @@
     const TABS = [['all', 'All'], ['tv_shows', 'Shows'], ['movies', 'Movies'], ['games', 'Games'], ['shorts', 'Shorts'], ['commercials', 'Ads'], ['narration', 'Narr.']];
     const SORTS = [['newest', 'Newest'], ['oldest', 'Oldest'], ['title', 'Title']];
     const PIN_RE = /^https:\/\/www\.behindthevoiceactors\.com\/[^/?#\s]+\/?$/;
-    // AniList theme colours as "r,g,b" custom properties; fallbacks are its dark theme.
+    // AniList theme colours as "r,g,b" custom properties; fallbacks are its dark theme. The switch copies its sort label (gray-600, hover gray-700, .3s).
     const CSS = `
-#btva-switch{flex:none;white-space:nowrap;margin:-6px auto -6px 0;background:none;border:0;padding:6px 0;font:inherit;font-size:1.3rem;font-weight:600;color:rgb(var(--color-text-lighter,116,136,153));cursor:pointer;transition:color .3s}
-#btva-switch:hover,#btva-switch:focus-visible{color:rgb(var(--color-blue,61,180,242))}
+#btva-switch{flex:none;white-space:nowrap;margin:-6px 0;background:none;border:0;padding:6px 0;font:inherit;font-size:1.3rem;font-weight:600;color:rgb(var(--color-gray-600,116,136,153));cursor:pointer;transition:color .3s}
+#btva-switch:hover,#btva-switch:focus-visible{color:rgb(var(--color-gray-700,139,160,178))}
 .btva-tabs{display:flex;flex-wrap:wrap;gap:4px 20px;margin:0 0 20px}
-.btva-tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:4px 0;min-height:32px;font:inherit;font-size:1.3rem;font-weight:600;color:rgb(var(--color-text-light,139,160,178));cursor:pointer;transition:color .2s}
+.btva-tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:4px 0;min-height:32px;font:inherit;font-size:1.3rem;font-weight:600;color:rgb(var(--color-text-light,139,160,178));cursor:pointer;transition:color .3s}
 .btva-tabs button:hover,.btva-tabs button:focus-visible,.btva-tabs button[aria-selected=true]{color:rgb(var(--color-blue,61,180,242))}
 .btva-tabs button[aria-selected=true]{border-bottom-color:currentColor}
 .btva-tabs small{font-size:1.1rem;font-weight:400;margin-left:4px;font-variant-numeric:tabular-nums}
@@ -227,6 +228,7 @@
     }
 
     let current = null;
+    const thumbs = new Map(); // thumb URL -> promise of its blob URL ('' if that failed too); one fetch per page load
 
     function mountStaff(staffId, deps) {
         const filters = document.querySelector('.staff-wrap .filters');
@@ -305,6 +307,13 @@
         }
         sort.addEventListener('click', () => (sort.querySelector('.dropdown') ? closeMenu() : openMenu()));
         sort.addEventListener('keydown', e => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!sort.querySelector('.dropdown')) openMenu();
+                const opts = [...sort.querySelectorAll('.option')], i = opts.indexOf(e.target);
+                const j = i < 0 ? opts.findIndex(o => o.classList.contains('active')) : Math.max(0, Math.min(opts.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)));
+                return opts[j]?.focus();
+            }
             if (e.target !== sort) { if (e.key === 'Escape') { closeMenu(); sort.focus(); } return; }
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort.click(); }
             if (e.key === 'Escape') closeMenu();
@@ -382,11 +391,17 @@
             img.loading = 'lazy';
             img.alt = '';
             img.className = 'image loaded';
-            img.src = httpsOnly(r.thumb);
+            const src = httpsOnly(r.thumb);
             // Firefox sends no BTVA cookie with page images, so Cloudflare can refuse them; the manager's request carries it.
-            if (img.src) img.addEventListener('error', () => deps.gmRequest({ method: 'GET', url: img.src, responseType: 'blob' })
-                .then(res => { if (res.status === 200 && res.response) img.src = URL.createObjectURL(res.response); })
-                .catch(() => {}), { once: true });
+            if (thumbs.has(src)) thumbs.get(src).then(u => { img.src = u || src; });
+            else {
+                img.src = src;
+                if (src) img.addEventListener('error', () => {
+                    if (!thumbs.has(src)) thumbs.set(src, deps.gmRequest({ method: 'GET', url: src, responseType: 'blob' })
+                        .then(res => (res.status === 200 && res.response ? URL.createObjectURL(res.response) : ''), () => ''));
+                    thumbs.get(src).then(u => { if (u) img.src = u; });
+                }, { once: true });
+            }
             const name = c.querySelector('.titles > .title');
             const roleTpl = name.querySelector('.role');
             setLink(name, r.charUrl);
