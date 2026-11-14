@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backloggd - Translate Reviews
 // @namespace    https://github.com/ceeprus
-// @version      1.5
+// @version      1.6
 // @description  Adds a translate button next to the date of non-English reviews on Backloggd
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       Cee
@@ -19,7 +19,7 @@
     const STYLE_ID = 'bglg-translate-review-style';
     const TARGET_LANG = 'en';
     const ENGLISH_RATIO_THRESHOLD = 0.2;
-    const CHUNK_SIZE = 1500;
+    const MAX_QUERY = 6000; // encoded characters of review text per request
     const DEBUG = false; // logs every review's verdict to the console
 
     // Material Design "translate" icon
@@ -166,15 +166,24 @@
     }
 
     // The endpoint takes the text in the query string, so long reviews go in sentence-aligned chunks.
+    // Size is measured encoded: one Japanese character becomes 9 characters in the URL.
     function chunkText(text) {
+        const enc = (s) => encodeURIComponent(s).length;
         const chunks = [];
-        let current = '';
-        for (const part of text.split(/(?<=[.!?\n])/)) {
-            if ((current + part).length > CHUNK_SIZE && current) {
+        let current = '', size = 0;
+        const add = (piece, n) => {
+            if (current && size + n > MAX_QUERY) {
                 chunks.push(current);
                 current = '';
+                size = 0;
             }
-            current += part;
+            current += piece;
+            size += n;
+        };
+        for (const part of text.split(/(?<=[.!?。！？\n])/)) {
+            const n = enc(part);
+            if (n <= MAX_QUERY) add(part, n);
+            else for (const ch of part) add(ch, enc(ch)); // one endless sentence: cut between characters, never inside an emoji
         }
         if (current) chunks.push(current);
         return chunks;
