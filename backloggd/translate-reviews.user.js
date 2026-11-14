@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backloggd - Translate Reviews
 // @namespace    https://github.com/ceeprus
-// @version      1.4
+// @version      1.5
 // @description  Adds a translate button next to the date of non-English reviews on Backloggd
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       Cee
@@ -128,6 +128,25 @@
                 margin-bottom: 0.25em;
                 font-size: 0.8em;
                 opacity: 0.75;
+            }
+            .translate-review-btn:active {
+                transform: scale(0.97);
+            }
+            .translate-review-btn.loading svg {
+                animation: translate-review-pulse 1s ease-in-out infinite;
+            }
+            @keyframes translate-review-pulse {
+                50% { opacity: 0.35; }
+            }
+            .translate-review-box:not([hidden]) {
+                animation: translate-review-reveal 220ms cubic-bezier(0.22, 1, 0.36, 1);
+            }
+            @keyframes translate-review-reveal {
+                from { clip-path: inset(0 0 100% 0); opacity: 0; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .translate-review-btn:active { transform: none; }
+                .translate-review-box:not([hidden]) { animation: none; }
             }
         `;
         document.head.appendChild(style);
