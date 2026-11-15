@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Info
 // @namespace    ceeprus
-// @version      3.1
+// @version      3.2
 // @description  Masks the emails, names and addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @icon         https://raw.githubusercontent.com/ceeprus/userscript/main/assets/ceeprus-64.png
@@ -121,6 +121,7 @@
   }
 
   const editRanges = new WeakMap();
+  let typingNode = null; // editor text that carries a typing cover, redrawn when the cursor moves
 
   function markEditable(node, hl) {
     for (const r of editRanges.get(node) || []) hl.delete(r);
@@ -129,6 +130,8 @@
     const sel = node.ownerDocument.getSelection();
     const typing = sel && sel.focusNode === node && prefixAt(node.data, sel.focusOffset);
     if (typing) spans.push(typing);
+    if (typing) typingNode = node;
+    else if (typingNode === node) typingNode = null;
     const ranges = [];
     for (const [start, end] of spans) {
       const r = node.ownerDocument.createRange();
@@ -389,6 +392,8 @@
     observer.observe(root, OBSERVE);
     root.addEventListener("input", onField, true);
     root.addEventListener("change", onField, true);
+    // A cursor move without typing changes no text, so nothing else would take the typing cover off.
+    if (root.nodeType === 9) root.addEventListener("selectionchange", () => typingNode && maskText(typingNode));
     scan(root);
   }
 
