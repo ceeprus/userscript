@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Backloggd - Translate Reviews
 // @namespace    https://github.com/ceeprus
-// @version      1.6
+// @version      1.7
 // @description  Adds a translate button next to the date of non-English reviews on Backloggd
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
-// @author       Cee
+// @author       ceeprus
 // @match        *://*.backloggd.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      translate.googleapis.com
