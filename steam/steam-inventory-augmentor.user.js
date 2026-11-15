@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.5
+// @version      3.28.6
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -590,6 +590,19 @@
 		return (a2 && a2.element) || null;
 	}
 
+	// true only when the owning inventory has loaded and the item is no longer in it (traded or sold)
+	function draftGone(entry) {
+		const m = String(entry).match(/^(\d+)_(\d+)_(\d+)$/);
+		if (!m) return false;
+		try {
+			const inv = W.UserYou?.getInventory?.(m[1], m[2]);
+			const assets = inv && (inv.rgInventory || inv.m_rgAssets);
+			return !!assets && Object.keys(assets).length > 0 && !assets[m[3]];
+		} catch {
+			return false;
+		}
+	}
+
 	function ensureDraftButton(bar) {
 		if (!CONFIG.draftSaver || !document.getElementById('trade_yours')) return;
 		if (document.getElementById('sia-draft') ||
@@ -616,6 +629,11 @@
 			// clicked before the inventory finished loading: keep the draft
 			// (and the button) instead of silently losing it
 			if (moved) btn.remove();
+			else if (ids.every(draftGone)) {
+				// every item already left the inventory: the draft is spent, drop it for good
+				localStorage.removeItem(tradePartnerKey());
+				btn.remove();
+			}
 		});
 		bar.appendChild(btn);
 	}
@@ -2595,6 +2613,8 @@
 					{ credentials: 'same-origin' });
 				const goo = await gooRes.json();
 				if (!gooRes.ok || !goo.goo_value) return fail(goo.message);
+				// Steam's own dialog asks first; grinding can't be undone, so ours does too.
+				if (!confirm(`Turn this item into ${goo.goo_value} gems? This can't be undone.`)) return;
 
 				params.goo_value_expected = goo.goo_value;
 				const grindRes = await fetch(`${W.g_strProfileURL}/ajaxgrindintogoo/`, {
