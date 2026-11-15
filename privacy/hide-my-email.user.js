@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Hide My Email
-// @namespace    cee
+// @namespace    ceeprus
 // @version      2.7
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
