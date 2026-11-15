@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.3.3
+// @version      5.3.4
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
 // @author       ceeprus
@@ -22,22 +22,8 @@
 
   // GitHub's Primer tokens follow the light/dark theme; the fallbacks are the old dark values.
   const STATES = {
-    waiting: {
-      icon: '⋯', label: 'waiting…',
-      color: 'var(--fgColor-muted, #8b949e)',
-      bg: 'var(--bgColor-neutral-muted, rgba(139,148,158,.1))',
-      border: 'var(--borderColor-neutral-muted, rgba(139,148,158,.25))',
-      spin: false,
-    },
     fetching: {
       icon: '↻', label: 'fetching .patch…',
-      color: 'var(--fgColor-attention, #d29922)',
-      bg: 'var(--bgColor-attention-muted, rgba(210,153,34,.1))',
-      border: 'var(--borderColor-attention-muted, rgba(210,153,34,.3))',
-      spin: true,
-    },
-    parsing: {
-      icon: '↻', label: 'parsing…',
       color: 'var(--fgColor-attention, #d29922)',
       bg: 'var(--bgColor-attention-muted, rgba(210,153,34,.1))',
       border: 'var(--borderColor-attention-muted, rgba(210,153,34,.3))',
@@ -69,7 +55,7 @@
   let pillEl    = null;
   let iconEl    = null;
   let labelEl   = null;
-  let spinFrame = null;
+  let spinAnim  = null;
   let popup     = null;
   let isOpen    = false;
   let injecting = false;
@@ -89,7 +75,7 @@
 
     iconEl = document.createElement('span');
     iconEl.setAttribute('aria-hidden', 'true');
-    iconEl.style.cssText = 'opacity:.8; font-style:normal; display:inline-block; transition:transform .1s;';
+    iconEl.style.cssText = 'opacity:.8; font-style:normal; display:inline-block;';
 
     labelEl = document.createElement('span');
 
@@ -124,18 +110,9 @@
 
     iconEl.textContent = s.icon;
 
-    if (spinFrame) cancelAnimationFrame(spinFrame);
-    if (s.spin && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      let angle = 0;
-      const spin = () => {
-        angle = (angle + 4) % 360;
-        iconEl.style.transform = `rotate(${angle}deg)`;
-        spinFrame = requestAnimationFrame(spin);
-      };
-      spinFrame = requestAnimationFrame(spin);
-    } else {
-      iconEl.style.transform = '';
-    }
+    if (spinAnim) { spinAnim.cancel(); spinAnim = null; }
+    if (s.spin && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+      spinAnim = iconEl.animate([{ transform: 'rotate(0)' }, { transform: 'rotate(360deg)' }], { duration: 1000, iterations: Infinity });
 
     labelEl.textContent = labelOverride ?? s.label ?? '';
 
@@ -235,12 +212,21 @@
     const rect = anchor.getBoundingClientRect();
     popup.style.top  = (rect.bottom + window.scrollY + 6) + 'px';
     popup.style.left = (rect.left   + window.scrollX)     + 'px';
+    // Grow out of the pill so the popup reads as coming from it.
+    const growFromPill = () => {
+      popup.style.transformOrigin = `${rect.left + rect.width / 2 + window.scrollX - parseFloat(popup.style.left)}px top`;
+    };
+    growFromPill();
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches)
+      popup.animate([{ opacity: 0, transform: 'scale(.95)' }, { opacity: 1, transform: 'none' }],
+        { duration: 150, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
 
     requestAnimationFrame(() => {
       if (!popup) return;
       const pr = popup.getBoundingClientRect();
       if (pr.right > window.innerWidth - 8)
         popup.style.left = (window.innerWidth - pr.width - 8 + window.scrollX) + 'px';
+      growFromPill();
     });
 
     // The popup sits at the end of <body>, so keyboard users are taken into it.
@@ -313,57 +299,45 @@
     // A response for a commit we already left must not land on the new pill.
     const stale = () => url !== patchUrl || pill !== pillEl;
 
-    applyState('waiting', 'waiting…');
-
-    // Small delay so the user sees "waiting" before fetch fires
-    setTimeout(() => {
-      if (stale()) return;
-      applyState('fetching');
-
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        timeout: 20000, // a stalled connection would leave the pill on "fetching" forever
-        onload(res) {
-          if (stale()) return;
-          applyState('parsing');
-
-          setTimeout(() => {
-            if (stale()) return;
-            if (res.status !== 200) {
-              applyState('error');
-              if (res.status === 403) labelEl.textContent = 'patch too large'; // GitHub refuses .patch for huge commits
-              return;
-            }
-
-            const entries = parseEmails(res.responseText);
-
-            if (!entries.length) {
-              applyState('error');
-              labelEl.textContent = 'no email found';
-              return;
-            }
-
-            currentEntries = entries;
-            const allNoreply = entries.every(e => e.email.includes('noreply.github.com'));
-            const first = entries[0];
-            const truncated = first.email.length > 22
-              ? first.email.slice(0, 20) + '…' : first.email;
-            const extra = entries.length > 1 ? ` +${entries.length - 1}` : '';
-
-            applyState(allNoreply ? 'noreply' : 'ready', truncated + extra);
-          }, 300); // parsing flash duration
-        },
-        onerror() {
-          if (!stale()) applyState('error');
-        },
-        ontimeout() {
-          if (stale()) return;
+    applyState('fetching');
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      timeout: 20000, // a stalled connection would leave the pill on "fetching" forever
+      onload(res) {
+        if (stale()) return;
+        if (res.status !== 200) {
           applyState('error');
-          labelEl.textContent = 'timed out';
-        },
-      });
-    }, 150); // waiting flash duration
+          if (res.status === 403) labelEl.textContent = 'patch too large'; // GitHub refuses .patch for huge commits
+          return;
+        }
+
+        const entries = parseEmails(res.responseText);
+
+        if (!entries.length) {
+          applyState('error');
+          labelEl.textContent = 'no email found';
+          return;
+        }
+
+        currentEntries = entries;
+        const allNoreply = entries.every(e => e.email.includes('noreply.github.com'));
+        const first = entries[0];
+        const truncated = first.email.length > 22
+          ? first.email.slice(0, 20) + '…' : first.email;
+        const extra = entries.length > 1 ? ` +${entries.length - 1}` : '';
+
+        applyState(allNoreply ? 'noreply' : 'ready', truncated + extra);
+      },
+      onerror() {
+        if (!stale()) applyState('error');
+      },
+      ontimeout() {
+        if (stale()) return;
+        applyState('error');
+        labelEl.textContent = 'timed out';
+      },
+    });
   }
 
   document.addEventListener('click', (e) => {
@@ -387,7 +361,7 @@
     if (url === patchUrl && pillEl && pillEl.isConnected) return;
 
     closePopup();
-    if (spinFrame) { cancelAnimationFrame(spinFrame); spinFrame = null; }
+    if (spinAnim) { spinAnim.cancel(); spinAnim = null; }
     if (pillEl) { (pillEl.parentElement || pillEl).remove(); pillEl = null; }
     currentEntries = [];
     patchUrl = url;
