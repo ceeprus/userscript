@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Info
 // @namespace    ceeprus
-// @version      3.0
+// @version      3.1
 // @description  Masks the emails, names and addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @icon         https://raw.githubusercontent.com/ceeprus/userscript/main/assets/ceeprus-64.png
@@ -45,7 +45,7 @@
     for (const { term, alias } of entries) {
       const at = term.lastIndexOf("@");
       if (at < 0) {
-        words.push([esc(term), alias]);
+        words.push([esc(term).replace(/\s+/g, "\\s+"), alias]); // any spacing: pages use nbsp and line breaks
         continue;
       }
       const local = term.slice(0, at), domain = term.slice(at + 1);
@@ -71,24 +71,69 @@
   const mask = (s) =>
     s.replace(M.re, (...m) => M.aliases[m.slice(1, 1 + M.aliases.length).findIndex((g) => g !== undefined)]);
 
-  let hl = null;
-  try {
-    hl = new Highlight();
-    CSS.highlights.set("hide-my-info", hl);
-    GM_addStyle("::highlight(hide-my-info){color:transparent;background-color:#808080}");
-  } catch {
-    hl = null;
+  // One highlight per document: editors that live in a same-origin frame (TinyMCE, CKEditor) need their own.
+  const highlights = new WeakMap(); // document -> Highlight, or null where unsupported
+  function highlightFor(doc) {
+    if (highlights.has(doc)) return highlights.get(doc);
+    let hl = null;
+    try {
+      const win = doc.defaultView;
+      hl = new win.Highlight();
+      win.CSS.highlights.set("hide-my-info", hl);
+      const css = "::highlight(hide-my-info){color:transparent;background-color:#808080}";
+      if (doc === document) GM_addStyle(css);
+      else (doc.head || doc.documentElement).append(Object.assign(doc.createElement("style"), { textContent: css }));
+    } catch {
+      hl = null;
+    }
+    highlights.set(doc, hl);
+    return hl;
   }
+  // While you type, the text at the cursor is covered as soon as it is the start of an entry (4 letters, or the whole
+  // entry if shorter), so an address being typed never shows in full. Only at the cursor: a finished word that merely
+  // starts like an entry ("Spring" for "Springfield") is not hidden once you move on.
+  const PREFIX_MIN = 4;
+  const squash = (s) => s.toLowerCase().replace(/\s+/g, " ");
+  const noDots = (s) => {
+    const at = s.indexOf("@");
+    return at < 0 ? s.replace(/\./g, "") : s.slice(0, at).replace(/\./g, "") + s.slice(at);
+  };
+  let prefixTerms = []; // [normalized term, Gmail (dots ignored)]
+  function setPrefixTerms(list) {
+    prefixTerms = list.map(({ term }) => {
+      const gmail = /@(gmail|googlemail)\.com$/i.test(term);
+      return [gmail ? noDots(squash(term)) : squash(term), gmail];
+    });
+  }
+  // [start, caret] of the typed text that begins an entry, or null.
+  function prefixAt(text, caret) {
+    const before = text.slice(0, caret);
+    for (const [term, gmail] of prefixTerms) {
+      const need = Math.min(PREFIX_MIN, term.length);
+      // Dots and doubled spaces make the typed text longer than the entry, hence the 2x window.
+      for (let i = Math.max(0, before.length - 2 * term.length); i <= before.length - need; i++) {
+        if (i > 0 && /[\p{L}\p{N}_]/u.test(before[i - 1])) continue; // start at a word edge only
+        const typed = gmail ? noDots(squash(before.slice(i))) : squash(before.slice(i));
+        if (typed.length >= need && term.startsWith(typed)) return [i, caret];
+      }
+    }
+    return null;
+  }
+
   const editRanges = new WeakMap();
 
-  function markEditable(node) {
+  function markEditable(node, hl) {
     for (const r of editRanges.get(node) || []) hl.delete(r);
     for (const r of hl) if (r.collapsed) hl.delete(r);
+    const spans = M ? [...node.data.matchAll(M.re)].map((m) => [m.index, m.index + m[0].length]) : [];
+    const sel = node.ownerDocument.getSelection();
+    const typing = sel && sel.focusNode === node && prefixAt(node.data, sel.focusOffset);
+    if (typing) spans.push(typing);
     const ranges = [];
-    for (const m of M ? node.data.matchAll(M.re) : []) {
-      const r = document.createRange();
-      r.setStart(node, m.index);
-      r.setEnd(node, m.index + m[0].length);
+    for (const [start, end] of spans) {
+      const r = node.ownerDocument.createRange();
+      r.setStart(node, start);
+      r.setEnd(node, end);
       hl.add(r);
       ranges.push(r);
     }
@@ -101,9 +146,10 @@
     const p = node.parentNode;
     if (!p || p.nodeType !== 1 || SKIP_PARENTS.has(p.localName)) return;
     const hit = hits(node.data);
-    if (!hit && !editRanges.has(node)) return;
     if (p.isContentEditable) {
-      if (hl && node.ownerDocument === document) markEditable(node);
+      if (!hit && !editRanges.has(node) && node.ownerDocument.getSelection()?.focusNode !== node) return;
+      const hl = highlightFor(node.ownerDocument);
+      if (hl) markEditable(node, hl);
       return;
     }
     if (!hit) return;
@@ -120,27 +166,157 @@
     }
   }
 
-  // Field values are what forms submit, so they are covered instead of rewritten. A solid block, not a blur:
-  // blurred text can be reconstructed. Dots underneath keep a text selection from showing the real letters.
-  const FIELD_MASK = { background: "#808080", color: "transparent", "caret-color": "transparent", "text-shadow": "none", "-webkit-text-security": "disc" };
-  const maskedFields = new WeakMap(); // field -> its own inline values, put back on unmask
-  function checkField(el) {
-    if (el.localName === "input" && SKIP_INPUT_TYPES.has(el.type)) return;
-    const hit = hits(el.value);
-    if (hit === maskedFields.has(el)) return;
-    if (hit) {
-      const saved = {};
-      for (const [prop, value] of Object.entries(FIELD_MASK)) {
-        saved[prop] = [el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)];
-        el.style.setProperty(prop, value, "important");
+  // Field values are what forms submit, so they are never rewritten. Grey bars are drawn over just the hidden
+  // part, from an overlay above the page, so the rest of what you type stays readable. Solid bars, not blur:
+  // blurred text can be reconstructed.
+  const BAR = "#808080";
+  // Longhands: the computed "font" shorthand is often empty, which would measure in the wrong font.
+  const MIRROR_STYLES = ["font-family", "font-size", "font-weight", "font-style", "font-stretch", "font-variant", "font-kerning", "font-feature-settings", "font-variation-settings", "letter-spacing", "word-spacing", "text-transform", "text-indent", "text-align", "tab-size", "padding-left", "padding-right", "line-height", "overflow-wrap", "word-break", "direction"];
+  const fields = new Map(); // field -> { clip, key, ranges }
+  const overlays = new WeakMap(); // document -> { host, root, mirror }
+  let gen = 0; // bumped when the list changes, so cached bar positions are redrawn
+
+  function overlayFor(doc) {
+    let o = overlays.get(doc);
+    if (o && o.host.isConnected) return o;
+    const host = doc.createElement("hide-my-info-bars");
+    host.style.cssText = "all:initial;position:fixed;inset:0;pointer-events:none;z-index:2147483647;contain:strict;";
+    const root = host.attachShadow({ mode: "closed" });
+    const mirror = doc.createElement("div");
+    mirror.style.cssText = "position:absolute;top:0;left:-99999px;visibility:hidden;box-sizing:content-box;border:0;";
+    root.append(mirror);
+    doc.documentElement.append(host);
+    o = { host, root, mirror };
+    overlays.set(doc, o);
+    return o;
+  }
+
+  // The bars sit in a clip box over the inner area of the field, where a hidden copy of the text puts the matches.
+  function drawBars(el) {
+    const doc = el.ownerDocument;
+    const layer = fields.get(el);
+    const o = overlayFor(doc);
+    if (layer.clip.parentNode !== o.root) o.root.append(layer.clip);
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return (layer.clip.style.display = "none");
+    layer.clip.style.cssText = `position:absolute;overflow:hidden;left:${r.left + el.clientLeft}px;top:${r.top + el.clientTop}px;width:${el.clientWidth}px;height:${el.clientHeight}px;`;
+    const cs = doc.defaultView.getComputedStyle(el);
+    const key = [gen, JSON.stringify(layer.ranges), el.value, el.scrollLeft, el.scrollTop, el.clientWidth, el.clientHeight, cs.fontFamily, cs.fontSize, cs.fontWeight, cs.letterSpacing].join("\n");
+    if (key === layer.key) return;
+    layer.key = key;
+    const area = el.localName === "textarea";
+    const m = o.mirror;
+    for (const p of MIRROR_STYLES) m.style.setProperty(p, cs.getPropertyValue(p));
+    m.style.whiteSpace = area ? "pre-wrap" : "pre";
+    const padLeft = parseFloat(cs.paddingLeft), padTop = parseFloat(cs.paddingTop);
+    m.style.width = `${el.clientWidth - padLeft - parseFloat(cs.paddingRight)}px`;
+    const parts = [];
+    let last = 0;
+    for (const [start, end] of layer.ranges) {
+      if (end <= last) continue;
+      const from = Math.max(start, last);
+      parts.push(el.value.slice(last, from), Object.assign(doc.createElement("span"), { textContent: el.value.slice(from, end) }));
+      last = end;
+    }
+    parts.push(el.value.slice(last));
+    m.replaceChildren(...parts);
+    const base = m.getBoundingClientRect();
+    const bars = [];
+    for (const span of m.querySelectorAll("span"))
+      for (const b of span.getClientRects()) {
+        // 2px extra on each side covers kerning differences between the copy and the field.
+        const x = b.left - base.left - el.scrollLeft - 2;
+        const y = area ? padTop + b.top - base.top - el.scrollTop - 1 : 0;
+        const height = area ? b.height + 2 : el.clientHeight;
+        const bar = doc.createElement("div");
+        bar.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${b.width + 4}px;height:${height}px;background:${BAR};border-radius:2px;`;
+        bars.push(bar);
       }
-      maskedFields.set(el, saved);
+    m.replaceChildren();
+    layer.clip.replaceChildren(...bars);
+  }
+
+  // Runs before every paint while a match is on screen, so scrolling or a layout shift never leaves text uncovered.
+  let looping = false;
+  function realign() {
+    for (const el of [...fields.keys()]) checkField(el); // also catches a dialog opened over the field since last frame
+    looping = fields.size > 0;
+    if (looping) requestAnimationFrame(realign);
+  }
+
+  // A modal dialog or popover sits in the top layer, above any overlay, so a field inside one is covered whole.
+  // Same for scaled fields, see checkField.
+  const COVER = { background: BAR, color: "transparent", "caret-color": "transparent", "text-shadow": "none", "-webkit-text-security": "disc", "-webkit-text-fill-color": "transparent" };
+  const MARK = "data-hide-my-info";
+  try {
+    GM_addStyle(`[${MARK}]::selection{color:transparent!important;-webkit-text-fill-color:transparent!important;background:transparent!important}`);
+  } catch {} // polish only: the inline cover still hides the text
+  const covered = new WeakMap(); // field -> its own inline values, put back on uncover
+  const inTopLayer = (el) => {
+    try {
+      return !!el.closest(":modal, :popover-open");
+    } catch {
+      return false; // selector unsupported means no top layer either
+    }
+  };
+  function setCover(el, on) {
+    if (on === covered.has(el)) return;
+    if (on) {
+      const saved = {};
+      for (const [prop, value] of Object.entries(COVER)) {
+        const own = [el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)];
+        el.style.setProperty(prop, value, "important");
+        saved[prop] = [...own, el.style.getPropertyValue(prop)]; // as the browser wrote it back, to compare later
+      }
+      covered.set(el, saved);
+      el.setAttribute(MARK, "");
     } else {
-      for (const [prop, [value, priority]] of Object.entries(maskedFields.get(el))) {
+      for (const [prop, [value, priority, mine]] of Object.entries(covered.get(el))) {
+        if (el.style.getPropertyValue(prop) !== mine) continue; // the site set its own value meanwhile: keep it
         if (value) el.style.setProperty(prop, value, priority);
         else el.style.removeProperty(prop);
       }
-      maskedFields.delete(el);
+      covered.delete(el);
+      el.removeAttribute(MARK);
+    }
+  }
+
+  // Full matches, plus the start of an entry being typed at the cursor of the focused field.
+  function coverRanges(el) {
+    const v = el.value;
+    const out = M ? [...v.matchAll(M.re)].map((m) => [m.index, m.index + m[0].length]) : [];
+    if (el.getRootNode().activeElement === el) {
+      let caret = null;
+      try {
+        caret = el.selectionEnd; // throws or is null on type=email
+      } catch {}
+      const typing = prefixAt(v, caret ?? v.length);
+      if (typing) out.push(typing);
+    }
+    return out.sort((a, b) => a[0] - b[0]);
+  }
+
+  function checkField(el) {
+    if (el.localName === "input" && SKIP_INPUT_TYPES.has(el.type)) return;
+    const ranges = el.isConnected ? coverRanges(el) : [];
+    const hit = ranges.length > 0;
+    // Scaled or rotated (a popup zoom animation): the text copy cannot line up, so cover the field whole.
+    const top = hit && (inTopLayer(el) || Math.abs(el.getBoundingClientRect().width - el.offsetWidth) > 0.5);
+    setCover(el, top);
+    const bars = hit && !top;
+    if (bars !== fields.has(el)) {
+      if (bars) fields.set(el, { clip: el.ownerDocument.createElement("div"), key: "", ranges });
+      else {
+        fields.get(el).clip.remove();
+        fields.delete(el);
+      }
+    }
+    if (!bars) return;
+    fields.get(el).ranges = ranges;
+    drawBars(el); // now, inside the input event, so the typed text is covered before the next paint
+    if (!looping) {
+      looping = true;
+      requestAnimationFrame(realign);
     }
   }
   const onField = (e) => {
@@ -165,7 +341,7 @@
   let panel = null;
 
   function visit(el) {
-    if (el === panel) return;
+    if (el === panel || el.localName === "hide-my-info-bars") return;
     maskAttrs(el);
     const tag = el.localName;
     if (tag === "input" || tag === "textarea") checkField(el);
@@ -223,11 +399,14 @@
     entries = list;
     applied = JSON.stringify(list);
     M = buildMatcher(list);
+    setPrefixTerms(list);
+    gen++;
     for (const root of [...roots]) scan(root);
     if (panel && panel.isConnected) panel.render();
   }
 
   M = buildMatcher(entries);
+  setPrefixTerms(entries);
   watch(document);
 
   GM_addValueChangeListener(KEY, (_name, _old, value) => {
@@ -444,7 +623,7 @@
     }
 
     function add() {
-      const terms = termIn.value.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+      const terms = termIn.value.split(/;+/).map((s) => s.trim()).filter(Boolean);
       if (!terms.length) return termIn.focus();
       if (terms.some((t) => t.length < MIN_LENGTH)) return fail(`Each entry needs at least ${MIN_LENGTH} characters.`, termIn);
       // While editing, the old row is dropped and the saved one goes back to its place.
@@ -532,7 +711,7 @@
       h("div", "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;", null, title, closeBtn),
       h("label", labelCss, { htmlFor: "hme-term", textContent: "Email, name or address to hide" }),
       termIn,
-      h("p", hintCss, { textContent: "Add several at once by separating them with commas." }),
+      h("p", hintCss, { textContent: "Add several at once by separating them with ;" }),
       h(
         "div",
         "display:flex;align-items:flex-end;gap:8px;margin-top:12px;",
