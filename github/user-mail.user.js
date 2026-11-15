@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.3.2
+// @version      5.3.3
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
-// @author       cee
+// @author       ceeprus
 // @match        https://github.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      github.com
