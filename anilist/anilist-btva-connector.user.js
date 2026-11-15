@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         AniList BTVA Connector
 // @namespace    https://github.com/ceeprus
-// @version      1.0.12
+// @version      1.0.13
 // @description  Swap a voice actor's AniList roles for their Behind The Voice Actors roles: games, dubs, movies and more
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=anilist.co
-// @author       Cee
+// @author       ceeprus
 // @license      MIT
 // @match        https://anilist.co/*
 // @grant        GM_xmlhttpRequest
