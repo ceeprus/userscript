@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.20
+// @version      1.21
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
-// @author       Cee
+// @author       ceeprus
 // @match        https://modrinth.com/*
 // @noframes
 // @grant        GM_getValue
