@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam AI Content Disclosure Badge
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.45
+// @version      2.48
 // @description  Flags Steam games that carry an "AI Generated Content Disclosure": a badge by the title on app pages (click it to jump to the disclosure), an overlay on capsules everywhere, and a line under the description in expanded sale widgets. An eye button in Steam's header cycles what listings do with a disclosed game: nothing, badge, blur until hovered, or hide it. A second eye hides games you pick yourself: point at a game and click the crossed-out eye beside its name. Both eyes follow you down the page.
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -255,6 +255,16 @@
         .newonsteam_headercaps > .newonsteam_headercap{flex-grow:0 !important;}
         /* A sale row (2 games over 3) with some hidden: the rest centred, at the width they had. */
         .sgai_row_packed{grid-template-columns:var(--sgai-cols) !important;justify-content:center !important;}
+        /* A carousel of whole pages (rows of games, or tall capsules beside stacked pairs) with games
+           hidden: every page's games on one grid along the strip, the boxes in between dissolved, so
+           later games fill the gaps (see flowPages). --sgai-ftracks: each page's columns and spacing. */
+        .sgai_flow .carousel__slider-tray{display:grid !important;grid-template-columns:var(--sgai-ftracks) !important;
+            grid-auto-rows:auto;align-items:var(--sgai-falign) !important;gap:var(--sgai-frow) 0 !important;
+            padding:var(--sgai-fpad) 0 !important;box-sizing:border-box !important;}
+        .sgai_flow .sgai_thru{display:contents !important;}
+        .sgai_flow .sgai_thru > :not(.sgai_thru):not(.sgai_flow_card){display:none !important;}
+        .sgai_flow .carousel__slider-tray > :not(.carousel__slide){position:absolute !important;}
+        .sgai_flow .carousel__slider-tray > .carousel__slide:not(.sgai_thru){width:auto !important;}
         .sgai_packed .carousel__slider-tray{width:calc(var(--sgai-m) / var(--sgai-v) * 100%) !important;
             transform:translateX(calc(var(--sgai-i) / var(--sgai-m) * -100%)) !important;}
         .sgai_packed .carousel__slider-tray > .carousel__slide{width:calc(100% / var(--sgai-m)) !important;}
@@ -933,6 +943,8 @@ ${SIGNATURE}` : SIGNATURE;
         if (own) return own;
         const h = /^hover_app_(\d+)$/.exec(el.id || '');
         if (h) return h[1];
+        // A trailer carousel's whole card (the hover button's): the game is its link's.
+        if (el.matches('.VideoRow > :not(button)')) return appIdOf(el.querySelector('a[href*="/app/"]'));
         return el.matches('.AppVideoCtn, .StoreSaleWidgetShortDesc, .tab_preview') ? widgetAppId(el) : null;
     }
     // Our badge needs a positioned host, but making a box positioned moves Steam's own overlays by
@@ -1541,6 +1553,9 @@ ${SIGNATURE}`;
             root.addEventListener('click', e => {
                 const b = e.target.closest && e.target.closest('.carousel__next-button, .carousel__back-button');
                 if (b) turned.set(root, { dir: b.matches('.carousel__next-button') ? 1 : -1, t: Date.now() });
+                // A page dot pressed by hand names its page outright. Our own presses (below) are not trusted events.
+                const d = e.isTrusted && e.target.closest && e.target.closest('.carousel__dot');
+                if (d) turned.set(root, { dot: [...root.querySelectorAll('.carousel__dot')].indexOf(d), t: Date.now() });
             }, true);
             // React rewrites the strip's style and every slide's class list as pages turn, wiping our marks.
             // Put them back here, before paint, so a hidden game never flashes.
@@ -1557,17 +1572,25 @@ ${SIGNATURE}`;
         }
         const gone = SLIDES_GONE();
         const isGone = s => allGone(s, gone);
-        for (const sl of slides) packRows(sl, gone);
+        const pages = flowPages(root, tray, slides, gone, V);
         let M = 0, before = 0;
-        slides.forEach((s, k) => {
-            const g = isGone(s);
-            s.classList.toggle('sgai_slide_gone', g && !(gone && s.matches(gone)));
-            if (!g) { M++; if (k < i) before++; }
-        });
+        if (pages !== null) { M = pages; before = Math.min(i, Math.max(0, M - 1)); }
+        else {
+            for (const sl of slides) packRows(sl, gone);
+            slides.forEach((s, k) => {
+                const g = isGone(s);
+                s.classList.toggle('sgai_slide_gone', g && !(gone && s.matches(gone)));
+                if (!g) { M++; if (k < i) before++; }
+            });
+        }
         // Nothing left: the panel goes with its heading and "See All", when it is this carousel's alone.
         const panel = root.closest('[data-featuretarget], .SaleSectionCtn');
         if (panel && panel.querySelectorAll('.carousel__slider-tray').length === 1) panel.classList.toggle('sgai_section_gone', !M);
-        if (M === N) {                                        // nothing gone: Steam's own layout
+        // Page dots (the front page's offers): one per page left.
+        const dots = [...root.querySelectorAll('.carousel__dot')];
+        const dotsLeft = n => dots.forEach((d, k) => { if (d.classList.contains('sgai_slide_gone') !== (k >= n)) d.classList.toggle('sgai_slide_gone', k >= n); });
+        if (pages === null && M === N) {                      // nothing gone: Steam's own layout
+            dotsLeft(Infinity);
             if (root.classList.contains('sgai_packed')) {
                 root.classList.remove('sgai_packed', 'sgai_pack_none');
                 delete root.dataset.sgaiAt; delete root.dataset.sgaiI;
@@ -1584,7 +1607,8 @@ ${SIGNATURE}`;
             turned.delete(root);
             const dir = t && Date.now() - t.t < 2000 ? t.dir : Math.sign(i - +wasI);
             const step = Math.min(V, +root.dataset.sgaiStep || V);
-            at = dir > 0 ? (+was >= last ? 0 : Math.min(+was + step, last)) : (+was <= 0 ? last : Math.max(+was - step, 0));
+            if (t && t.dot >= 0 && Date.now() - t.t < 2000) at = Math.min(t.dot, last);
+            else at = dir > 0 ? (+was >= last ? 0 : Math.min(+was + step, last)) : (+was <= 0 ? last : Math.max(+was - step, 0));
             // Steam's own step, where it shows: a turn clear of either end of its strip.
             if (Math.sign(i - +wasI) === dir && i < N - V && +wasI < N - V) root.dataset.sgaiStep = Math.abs(i - +wasI);
         }
@@ -1605,19 +1629,154 @@ ${SIGNATURE}`;
         put('--sgai-m', M); put('--sgai-v', V); put('--sgai-t', Math.min(V, M)); put('--sgai-i', at);
         root.dataset.sgaiI = i;
         root.dataset.sgaiAt = at;
+        // Steam lights the dot of its own page, which may be one that is gone: press the dot of ours,
+        // so its count and ours agree again. Noted as where Steam is, so that move is not taken for a turn.
+        dotsLeft(last + 1);
+        if (dots.length && i !== at && dots[at] && !dots[at].disabled) {
+            root.dataset.sgaiI = at;
+            queueMicrotask(() => { if (dots[at].isConnected) dots[at].click(); });
+        }
     }
     // Sale rows (two over three) with games hidden: each row is laid out again over the games left,
     // centred at their old width; an empty row folds, an empty page drops. Moving between pages is React's.
     function packRows(slide, gone) { packRowList(slide.querySelectorAll('.SaleSectionContainer'), gone); }
+    const cardOff = (c, gone) => [...c.querySelectorAll('a[href*="/app/"]')].filter(a => !aside(a)).every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
+    // A carousel that shows one whole page at a time: the games after a hidden one move up into its
+    // place, across pages, in Steam's order. Nothing is moved in the DOM, which is React's: the boxes
+    // between the strip and each game are dissolved in CSS and the games placed on one grid. Two kinds
+    // of page, each giving { cards, L columns, R rows, align, measure(), place(isShown) }.
+    const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+    // Rows of games (two over three): Steam's ItemCount_n rows.
+    function rowLayout(drawn) {
+        const rowsOf = s => [...s.querySelectorAll('.SaleSectionContainer')];
+        const per = rowsOf(drawn[0]).map(r => +((r.className.match(/ItemCount_(\d+)/) || [])[1]) || 0);
+        if (!per.length || per.some(n => !n)) return null;
+        if (!drawn.every(s => [...s.querySelectorAll('a[href*="/app/"]')].every(a => aside(a) || a.closest('.SaleSectionContainer')))) return null;
+        const L = per.reduce((a, n) => a * n / gcd(a, n), 1), size = per.reduce((a, n) => a + n, 0);
+        const cards = drawn.flatMap(s => rowsOf(s).flatMap(r => [...r.children].filter(k => k.querySelector('a[href*="/app/"]'))));
+        return { cards, L, R: per.length, align: 'start',
+            measure() {
+                const rows = rowsOf(drawn[0]), page = drawn[0].getBoundingClientRect();
+                // From the games themselves: a row is wider and taller than the games in it.
+                const cardIn = r => r && [...r.children].find(k => k.getBoundingClientRect().height > 2);
+                const c0 = cardIn(rows[0]), c1 = cardIn(rows[1]), a = (c0 || rows[0]).getBoundingClientRect();
+                return { gap: parseFloat(getComputedStyle(rows[0]).columnGap) || 0, padX: Math.max(0, Math.min(...drawn.flatMap(sl => rowsOf(sl).flatMap(r => [...r.children]).map(k => k.getBoundingClientRect()).filter(b => b.height > 2).map(b => b.left - sl.getBoundingClientRect().left)))), padY: Math.max(0, a.top - page.top),
+                    row: c0 && c1 ? Math.max(0, c1.getBoundingClientRect().top - c0.getBoundingClientRect().bottom) : 0 };
+            },
+            place(isShown) {
+                return cards.filter(isShown).map((c, n) => {
+                    let k = n % size, row = 0;
+                    while (k >= per[row]) k -= per[row++];
+                    const span = L / per[row];
+                    return { c, page: Math.floor(n / size), row, rows: 1, col: k * span, cols: span };
+                });
+            } };
+    }
+    // Columns (the front page's offers): a tall capsule alone in its column, or smaller ones stacked.
+    // Tall ones keep their turn; the stacked ones close up among themselves, as their art fits no tall place.
+    function colLayout(drawn) {
+        const listOf = s => s.querySelector('.carousel__inner-slide > [role="list"]');
+        if (!drawn.every(listOf)) return null;
+        const cols = drawn.flatMap(s => [...listOf(s).children]);
+        // Signed in, a column also holds Steam's "ON WISHLIST" flag beside its capsule: not a capsule.
+        const cardsOf = col => [...col.children].filter(k => k.querySelector('a[href]'));
+        if (!cols.every(col => cardsOf(col).length)) return null;
+        const L = Math.max(...drawn.map(s => listOf(s).children.length)), R = Math.max(...cols.map(col => cardsOf(col).length));
+        if (L < 2 || R < 2 || R > 3) return null;
+        // Tall: alone and as high as its column. Remembered: a dissolved or hidden column has no height.
+        for (const col of cols) if (col.dataset.sgaiTall === undefined) {
+            const h = col.getBoundingClientRect().height, k = cardsOf(col)[0].getBoundingClientRect().height;
+            if (cardsOf(col).length > 1) col.dataset.sgaiTall = '0';
+            else if (h > 2 && k > 2) col.dataset.sgaiTall = k > h * 0.75 ? '1' : '0';
+        }
+        const tall = col => (col.dataset.sgaiTall === undefined ? cardsOf(col).length === 1 : col.dataset.sgaiTall === '1');
+        // A tall capsule moves as its whole column, flag and all; stacked ones leave theirs.
+        return { cards: cols.flatMap(col => (tall(col) ? [col] : cardsOf(col))), L, R, align: 'stretch',
+            measure() {
+                const st = getComputedStyle(listOf(drawn[0])), box = k => k.getBoundingClientRect();
+                const pair = cols.map(cardsOf).find(ks => ks.length > 1 && box(ks[0]).height > 2 && box(ks[1]).height > 2);
+                return { gap: parseFloat(st.columnGap) || 0, padX: parseFloat(st.paddingLeft) || 0, padY: parseFloat(st.paddingTop) || 0,
+                    row: pair ? Math.max(0, box(pair[1]).top - box(pair[0]).bottom) : parseFloat(st.columnGap) || 0 };
+            },
+            place(isShown) {
+                const small = cols.filter(col => !tall(col)).flatMap(cardsOf).filter(isShown);
+                const out = [];
+                let u = 0, at = 0;
+                for (const col of cols) {
+                    if (tall(col)) {
+                        const c = col;
+                        if (isShown(c)) { out.push({ c, page: Math.floor(u / L), row: 0, rows: R, col: u % L, cols: 1 }); u++; }
+                    } else if (at < small.length) {
+                        for (let r = 0; r < R && at < small.length; r++) out.push({ c: small[at++], page: Math.floor(u / L), row: r, rows: 1, col: u % L, cols: 1 });
+                        u++;
+                    }
+                }
+                return out;
+            } };
+    }
+    // Returns the pages left, or null when the carousel is not of such a kind or has nothing hidden.
+    function flowPages(root, tray, slides, gone, V) {
+        // Only when it changes: a class set again still wakes the strip's observer.
+        const mark = (el, cls, on) => { if (el.classList.contains(cls) !== on) el.classList.toggle(cls, on); };
+        const place = (el, v) => { if (el.dataset.sgaiArea !== v) { el.dataset.sgaiArea = v; el.style.gridArea = v; } };
+        const put = (k, v) => { if (root.style.getPropertyValue(k) !== String(v)) root.style.setProperty(k, String(v)); };
+        const drawn = slides.filter(sl => sl.querySelector('a[href*="/app/"]'));
+        const lay = V === 1 && drawn.length ? rowLayout(drawn) || colLayout(drawn) : null;
+        // A card with no game in it (a sale's banner among the offers) is never hidden; it moves up like the rest.
+        const isOff = c => !!c.querySelector('a[href*="/app/"]') && cardOff(c, gone);
+        if (!lay || !lay.cards.some(isOff)) {
+            if (root.classList.contains('sgai_flow')) {
+                root.classList.remove('sgai_flow');
+                for (const el of tray.querySelectorAll('.sgai_thru, .sgai_flow_card, [data-sgai-area]')) {
+                    el.classList.remove('sgai_thru', 'sgai_flow_card');
+                    if (el.dataset.sgaiArea) { delete el.dataset.sgaiArea; el.style.gridArea = ''; }
+                }
+            }
+            return null;
+        }
+        if (!root.classList.contains('sgai_flow')) {         // Steam's own spacing, read before it is dissolved
+            // shortcut: read once per visit, re-read on resize if Steam's spacing starts to change with the window's width
+            const m = lay.measure();
+            put('--sgai-fgap', m.gap + 'px'); put('--sgai-frow', m.row + 'px'); put('--sgai-fpadx', m.padX + 'px'); put('--sgai-fpad', m.padY + 'px');
+        }
+        mark(root, 'sgai_flow', true);
+        put('--sgai-falign', lay.align);
+        for (const c of lay.cards) {
+            mark(c, 'sgai_card_gone', isOff(c) && !(gone && c.matches(gone)));
+            mark(c, 'sgai_flow_card', true);
+            mark(c, 'sgai_thru', false);
+            for (let el = c.parentElement; el && el !== tray; el = el.parentElement) {
+                mark(el, 'sgai_thru', true);
+                mark(el, 'sgai_flow_card', false);
+                for (const cls of ['sgai_row_gone', 'sgai_row_packed', 'sgai_slide_gone']) mark(el, cls, false);
+            }
+        }
+        // A page's tracks: its side padding, then L columns with the gaps between them as tracks of their own.
+        const T = 2 * lay.L + 1;
+        let pages = 0;
+        for (const p of lay.place(c => !isOff(c))) {
+            place(p.c, `${p.row + 1} / ${p.page * T + 2 + 2 * p.col} / span ${p.rows} / span ${2 * p.cols - 1}`);
+            pages = Math.max(pages, p.page + 1);
+        }
+        // Pages Steam has not drawn yet keep their box, after the games: it draws them as they near the screen.
+        for (const sl of slides) if (!drawn.includes(sl)) {
+            mark(sl, 'sgai_thru', false);
+            place(sl, `1 / ${pages * T + 1} / span ${lay.R} / span ${T}`);
+            pages++;
+        }
+        const v = k => root.style.getPropertyValue(k) || '0px';
+        const page = `${v('--sgai-fpadx')} ${Array(lay.L).fill('minmax(0,1fr)').join(` ${v('--sgai-fgap')} `)} ${v('--sgai-fpadx')}`;
+        put('--sgai-ftracks', `repeat(${Math.max(1, pages)}, ${page})`);
+        return pages;
+    }
     function packRowList(rows, gone) {
         for (const row of rows) {
             const kids = [...row.children];
             const cards = kids.filter(k => k.querySelector('a[href*="/app/"]'));
             if (!cards.length) continue;
-            const off = c => [...c.querySelectorAll('a[href*="/app/"]')].filter(a => !aside(a)).every(a => (gone && a.closest(gone)) || dropped(appIdOf(a) || ''));
             let left = 0;
             for (const c of cards) {
-                const o = off(c);
+                const o = cardOff(c, gone);
                 c.classList.toggle('sgai_card_gone', o && !(gone && c.matches(gone)));
                 if (!o) left++;
             }
@@ -2000,7 +2159,9 @@ ${SIGNATURE}`;
 
     // Where this game's name is printed inside `root`, matched by text (the preview's title class is
     // hashed per build). Any of its names: a demo's card says "... Demo", its lookup the full game's.
-    const skipOurs = { acceptNode: n => n.nodeType === 1 && n.matches('.sgai_badge, .sgai_hide, .sgai_title_hide')
+    // A trailer's video is skipped too: its "Trailer Preview | <name>" caption comes and goes with the
+    // pointer, and the button would jump between it and the card's own name.
+    const skipOurs = { acceptNode: n => n.nodeType === 1 && n.matches('.sgai_badge, .sgai_hide, .sgai_title_hide, .AppVideoCtn')
         ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT };
     function nameSpot(root, names) {
         const wants = new Set(names.map(norm).filter(Boolean));
@@ -2042,7 +2203,8 @@ ${SIGNATURE}`;
             if (r) return { left: r.right + BTN_GAP, top: r.top + (r.height - BTN_PX) / 2, size: BTN_PX };
         }
         for (const root of roots) {
-            const star = onScreen(root.querySelector('.WishlistButton') || root.querySelector('.WishlistButtonText')?.parentElement);
+            // A trailer card has two stars, one per layout: the one on screen.
+            const star = [...root.querySelectorAll('.WishlistButton'), ...[...root.querySelectorAll('.WishlistButtonText')].map(t => t.parentElement)].find(onScreen);
             if (!star) continue;
             const s = star.getBoundingClientRect();
             const size = Math.round(Math.min(40, Math.max(18, s.height)));   // the star's own size
@@ -2112,8 +2274,9 @@ ${SIGNATURE}`;
     function capsuleUnder(target) {
         if (!target || !target.closest) return null;
         // A sale widget is a whole card (image on one side, title, tags and buttons on the other),
-        // and pointing at its text half is still pointing at that game.
-        const card = target.closest('.StoreSaleWidgetOuterContainer, .LibraryAssetExpandedDisplay');
+        // and pointing at its text half is still pointing at that game. A trailer carousel's card too:
+        // read from its link, since Steam swaps the next game into the same nodes and our tag goes stale.
+        const card = target.closest('.StoreSaleWidgetOuterContainer, .LibraryAssetExpandedDisplay, .VideoRow > :not(button)');
         if (card) {
             const id = appIdOf(card.querySelector('a[href*="/app/"]'));
             if (validId(id)) return { el: card, id };
