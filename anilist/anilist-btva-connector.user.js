@@ -199,7 +199,7 @@
 .btva-tabs small{font-size:1.1rem;font-weight:400;margin-left:4px;font-variant-numeric:tabular-nums}
 .btva-note,.btva-foot{font-size:1.4rem;color:rgb(var(--color-text-light,139,160,178));margin:20px 0}
 .btva-foot{display:flex;justify-content:flex-end;gap:16px;font-size:1.3rem}
-.btva-note a,.btva-foot a,.btva-link{color:rgb(var(--color-blue,61,180,242));background:none;border:0;padding:0;font:inherit;font-weight:600;cursor:pointer}
+.btva-note a,.btva-foot a,.btva-link{color:rgb(var(--color-blue,61,180,242));background:none;border:0;padding:5px 0;margin:-5px 0;font:inherit;font-weight:600;cursor:pointer}
 .btva-note a:hover,.btva-foot a:hover,.btva-link:hover{text-decoration:underline}
 #btva-sort .option{cursor:pointer}
 #btva-roles{margin-top:80px}
@@ -390,7 +390,8 @@
             img.referrerPolicy = 'no-referrer';
             img.loading = 'lazy';
             img.alt = '';
-            img.className = 'image loaded';
+            img.className = 'image'; // AniList's .image.loaded fades in; add it once the picture is there
+            img.addEventListener('load', () => img.classList.add('loaded'));
             const src = httpsOnly(r.thumb);
             // Firefox sends no BTVA cookie with page images, so Cloudflare can refuse them; the manager's request carries it.
             if (thumbs.has(src)) thumbs.get(src).then(u => { img.src = u || src; });
