@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Email
 // @namespace    cee
-// @version      2.6
+// @version      2.7
 // @description  Masks the email addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @homepage     https://github.com/ceeprus/userscript
@@ -373,6 +373,47 @@
       if (e.key === "Escape") host.close();
       else if (e.key === "Enter" && (root.activeElement === termIn || root.activeElement === aliasIn)) add();
     };
+    const exportBtn = h("button", btnCss, { type: "button", textContent: "Export list" });
+    const importBtn = h("button", btnCss, { type: "button", textContent: "Import list" });
+    const fileIn = h("input", null, { type: "file", accept: ".json,application/json", hidden: true });
+    const status = h("p", hintCss, { role: "status" });
+
+    // The file holds the real addresses in plain text, so it is only written when asked.
+    exportBtn.addEventListener("click", () => {
+      if (!entries.length) return (status.textContent = "Nothing to export yet.");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(entries, null, 2)], { type: "application/json" }));
+      const a = h("a", null, { href: url, download: "hide-my-email.json" });
+      root.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      status.textContent = `Exported ${entries.length} ${entries.length === 1 ? "entry" : "entries"}. The file shows the real addresses.`;
+    });
+
+    importBtn.addEventListener("click", () => fileIn.click());
+    fileIn.addEventListener("change", async () => {
+      const file = fileIn.files[0];
+      fileIn.value = "";
+      if (!file) return;
+      let incoming;
+      try {
+        incoming = sanitize(JSON.parse(await file.text()));
+      } catch {
+        incoming = [];
+      }
+      if (!incoming.length) return (status.textContent = "That file has no entries this script can read.");
+      const next = entries.slice();
+      for (const e of incoming) {
+        const i = next.findIndex((x) => x.term.toLowerCase() === e.term.toLowerCase());
+        if (i >= 0) next[i] = { term: e.term, alias: e.alias };
+        else next.push({ term: e.term, alias: e.alias });
+      }
+      if (hasLoop(next)) return (status.textContent = "Not imported: a label in that file contains one of the hidden words.");
+      added = new Set(incoming.map((e) => e.term.toLowerCase()));
+      save(next);
+      status.textContent = `Imported ${incoming.length} ${incoming.length === 1 ? "entry" : "entries"}.`;
+    });
+
     hideBtn.addEventListener("click", add);
     reveal.addEventListener("change", host.render);
     closeBtn.addEventListener("click", host.close);
@@ -398,6 +439,8 @@
       list,
       h("label", `${font}display:flex;align-items:center;gap:8px;margin-top:14px;color:${c.fg};cursor:pointer;`, null, reveal, "Show full addresses in this panel"),
       h("p", hintCss, { textContent: "Keep this off while streaming. Removed entries stay masked in open tabs until you reload them." }),
+      h("div", `display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid ${c.line};`, null, exportBtn, importBtn, fileIn),
+      status,
     );
     box.setAttribute("aria-labelledby", "hme-title");
     root.append(box);
