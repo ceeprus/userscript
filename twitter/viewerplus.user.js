@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.38
+// @version      1.39
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu), a toggle to hide "Post Video" from the video right-click menu and one that gives photos the browser's own right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       ceeprus
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -164,6 +164,7 @@
 
     const box = document.createElement('div');
     box.id = BOX_ID;
+    box.dataset.theme = themeKey();
     Object.assign(box.style, {
       backgroundColor: ref.backgroundColor,
       border: ref.borderTopWidth + ' solid ' + ref.borderTopColor,
@@ -412,16 +413,30 @@
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? '#0f1419' : '#fff';
   }
 
-  // The user's X accent: Control Panel for Twitter's CSS var, else an accent-coloured link.
+  // The user's X accent: Control Panel for Twitter's CSS var, else the sidebar Post button's fill,
+  // else an accent-coloured link (logged out).
+  let lastAccent = '';
   function accentColors() {
     let bg = '';
     try { bg = getComputedStyle(document.body).getPropertyValue('--cpft-theme').trim(); } catch (e) {}
+    const post = !bg && document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
+    if (post) {
+      // hover and press shade the fill, so keep the last clean read meanwhile
+      bg = post.matches(':hover, :active') ? lastAccent : getComputedStyle(post).backgroundColor;
+      if (bg === 'rgba(0, 0, 0, 0)') bg = '';
+    }
     if (!bg) {
       const link = document.querySelector('[data-testid="tweetText"] a[href], a[href*="/hashtag/"]');
       if (link) bg = getComputedStyle(link).color || '';
     }
     if (!bg) bg = '#1d9bf0';
+    lastAccent = bg;
     return { bg, fg: contrastOn(bg) };
+  }
+
+  // Theme colours are copied into the panel at build time, so a change to either means a rebuild.
+  function themeKey() {
+    return getComputedStyle(document.body).backgroundColor + '|' + accentColors().bg;
   }
 
   // X-style square checkbox; checked fill uses the live accent colour.
@@ -703,7 +718,11 @@
   }
 
   function ensureBox() {
-    if (document.getElementById(BOX_ID)) return;
+    const old = document.getElementById(BOX_ID);
+    if (old) {
+      if (old.dataset.theme === themeKey()) return;
+      old.remove();
+    }
     const section = findSection();
     if (!section) return;
     const card = findCard(section);
