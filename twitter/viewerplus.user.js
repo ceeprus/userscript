@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.40
+// @version      1.43
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu), a toggle to hide "Post Video" from the video right-click menu and one that gives photos the browser's own right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       ceeprus
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -30,9 +30,23 @@
   // X sets its font per-element, not on a parent, so apply Chirp explicitly (else serif).
   const FONT_STACK = 'TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 
+  // X serves two web apps at once (the 2026 rewrite has almost no data-testids), so each selector
+  // lists the old form first, then the new one. New-app tweets are the <article> directly under a
+  // [data-href] link wrapper; a quoted tweet has its own wrapper inside the embedded-tweet frame.
+  const NEW_TWEET = '[data-href] > article:not([data-slot="embedded-tweet-frame"] article)';
+  const TWEET_SEL = '[data-testid="tweet"], ' + NEW_TWEET;
+  const CELL_SEL  = '[data-testid="cellInnerDiv"], main li[data-index]';
+  const TEXT_SEL  = '[data-testid="tweetText"], [data-href] > article div[dir="auto"]:not(.x-middot-group *)';
+  const NAME_SEL  = '[data-testid="User-Name"], .x-middot-group';
+  const QUOTE_SEL = '[data-slot="embedded-tweet-frame"]';
+  const REPLY_BTN = '[data-testid="reply"], [data-engagement-action="reply"]';
+
   // Leaf media nodes, for detection and the media modifiers.
   const MEDIA_SEL = '[data-testid="tweetPhoto"], [data-testid="videoComponent"], ' +
-                    '[data-testid="card.wrapper"], [data-testid="card.layoutLarge.media"]';
+                    '[data-testid="card.wrapper"], [data-testid="card.layoutLarge.media"], ' +
+                    '[data-href] > article [data-slot="xds-context-menu-trigger"], [data-href] > article video, ' +
+                    '[data-href] > article a[href^="https://t.co/"]:has(img)';
+  const VIDEO_SEL = '[data-testid="videoPlayer"], video';
   const COMPACT_MEDIA_MAX = '120px';
 
   // Whole-tweet filters (shown with a live hidden/total counter).
@@ -86,10 +100,14 @@
   state.hidePostVideo = false; // when on, removes "Post Video" from the video right-click menu
   state.nativePhotoMenu = false; // when on, right-clicking a photo opens the browser's menu, not X's
 
-  // Add to a Set, evicting the oldest entry if it would exceed ID_CAP (insertion order = age).
-  function addCapped(set, id) {
+  // Hidden-row rules kept: each is a :has() rule the browser checks on every row, so far fewer than ids.
+  // Past the cap the oldest rows drop their rule and size back up if they remount.
+  const ROW_CAP = 600;
+
+  // Add to a Set, evicting the oldest entry if it would exceed the cap (insertion order = age).
+  function addCapped(set, id, cap = ID_CAP) {
     if (set.has(id)) return;
-    if (set.size >= ID_CAP) set.delete(set.values().next().value);
+    if (set.size >= cap) set.delete(set.values().next().value);
     set.add(id);
   }
 
@@ -135,6 +153,10 @@
     if (aside) return aside;
     // Other named sidebar modules; single-post pages lead with "Relevant people".
     const wanted = ['you might like', 'who to follow', 'relevant people'];
+    // New app: each sidebar module is a rounded <section> with an <h2>.
+    for (const h of document.querySelectorAll('aside section h2')) {
+      if (wanted.includes(h.textContent.trim().toLowerCase())) return h.closest('section');
+    }
     const headings = document.querySelectorAll(
       'aside[role="complementary"] [role="heading"], [data-testid="sidebarColumn"] [role="heading"]');
     for (const h of headings) {
@@ -144,7 +166,7 @@
   }
 
   function findHeadingTextEl(section) {
-    const heading = section.querySelector('[role="heading"]');
+    const heading = section.querySelector('[role="heading"], h2');
     return heading ? (heading.querySelector('span') || heading) : null;
   }
 
@@ -393,6 +415,7 @@
   function resetAll() {
     Object.keys(state).forEach(k => { state[k] = false; });
     FILTERS.forEach(f => hiddenIds[f.key].clear());
+    hiddenRows.clear();
     saveState();
     const box = document.getElementById(BOX_ID);
     if (box) box.remove();
@@ -416,9 +439,20 @@
   // The user's X accent: Control Panel for Twitter's CSS var, else the sidebar Post button's fill,
   // else an accent-coloured link (logged out).
   let lastAccent = '';
+  let brandProbe = null;
   function accentColors() {
     let bg = '';
     try { bg = getComputedStyle(document.body).getPropertyValue('--cpft-theme').trim(); } catch (e) {}
+    // New app: the accent is a CSS var (its Post button is plain white). Resolve it to a colour.
+    if (!bg && getComputedStyle(document.documentElement).getPropertyValue('--color-brand').trim()) {
+      // Kept outside <body>: adding it there would wake the body observer every frame.
+      if (!brandProbe || !brandProbe.isConnected) {
+        brandProbe = document.createElement('i');
+        brandProbe.style.cssText = 'display:none;color:var(--color-brand)';
+        document.documentElement.appendChild(brandProbe);
+      }
+      bg = getComputedStyle(brandProbe).color;
+    }
     const post = !bg && document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
     if (post) {
       // hover and press shade the fill, so keep the last clean read meanwhile
@@ -469,6 +503,7 @@
       e.stopPropagation();
       state[key] = !state[key];
       if (!state[key] && hiddenIds[key]) hiddenIds[key].clear(); // filters only; modifiers have none
+      hiddenRows.clear(); // rows out of view keep their rule otherwise; the pass re-adds what still hides
       render();
       applyFilters();
       saveState();
@@ -491,30 +526,36 @@
 
   // Author handle + status id from a tweet's permalink (handles relative and absolute hrefs).
   function permalinkInfo(article) {
+    const wrapHref = article.parentElement && article.parentElement.getAttribute('data-href'); // new app
     const link = article.querySelector('a[href*="/status/"]');
-    if (!link) return { author: null, id: null };
-    const m = (link.getAttribute('href') || '').match(/(?:https?:\/\/[^/]+)?\/([^/]+)\/status\/(\d+)/);
+    const href = wrapHref || (link && link.getAttribute('href'));
+    if (!href) return { author: null, id: null };
+    const m = href.match(/(?:https?:\/\/[^/]+)?\/([^/]+)\/status\/(\d+)/);
     return m ? { author: m[1].toLowerCase(), id: m[2] } : { author: null, id: null };
   }
 
   // Classify a cell (may be a multi-tweet conversation) -> { id, cats } or null.
   function classify(cell) {
-    const articles = Array.from(cell.querySelectorAll('[data-testid="tweet"]'));
+    const articles = Array.from(cell.querySelectorAll(TWEET_SEL));
     if (!articles.length) return null;
 
     const owner = (activeProfile || '').toLowerCase();
     const infos = articles.map(a => {
       const { author, id } = permalinkInfo(a);
-      const ctx = a.querySelector('[data-testid="socialContext"]');
-      const s = ctx ? ctx.textContent.toLowerCase() : '';
+      const s = socialContext(a).toLowerCase();
 
       // The quoted-tweet wrapper, so its nested text/avatars don't leak into this tweet's signals.
-      const quoteEl = a.querySelector('div[role="link"]');
-      const hasQuote = !!(quoteEl && quoteEl.querySelector('[data-testid="User-Name"]'));
+      const quoteEl = a.querySelector(QUOTE_SEL) || a.querySelector('div[role="link"]');
+      const hasQuote = !!(quoteEl && quoteEl.querySelector(NAME_SEL));
+
+      // Thread connector beside the avatar (new app): a line above = the reply, one below = its parent.
+      const av = a.querySelector('[data-post-avatar]');
+      const upNew = !!(av && av.previousElementSibling);
+      const downNew = !!(av && av.nextElementSibling);
 
       // "Replying to" that belongs to this tweet, not to a reply shown inside the quoted tweet.
       let replyingTo = false;
-      for (const d of a.querySelectorAll('div[dir="ltr"]')) {
+      for (const d of a.querySelectorAll('div[dir="ltr"], div.text-secondary')) {
         if (hasQuote && quoteEl.contains(d)) continue;
         if (/^\s*replying to/i.test(d.textContent)) { replyingTo = true; break; }
       }
@@ -525,8 +566,8 @@
         retweet: /repost|retweet/.test(s),
         quote: hasQuote,
         // Thread-connector line: anyLine = in a thread; upLine = the reply itself.
-        anyLine: !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1'),
-        upLine:  !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1.r-1p0dtai'),
+        anyLine: upNew || downNew || !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1'),
+        upLine:  upNew || !!a.querySelector('.r-1bnu78o.r-f8sm7e.r-m5arl1.r-1p0dtai'),
       };
     });
 
@@ -564,9 +605,67 @@
     };
   }
 
+  // "Pinned" / "<name> reposted" line above a tweet. The new app has no test id for it: it is the
+  // article's leading row(s) before the avatar row.
+  function socialContext(article) {
+    const old = article.querySelector('[data-testid="socialContext"]');
+    if (old) return old.textContent;
+    const av = article.querySelector('[data-post-avatar]');
+    if (!av) return '';
+    let s = '';
+    for (const child of article.children) {
+      if (child.contains(av)) break;
+      s += child.textContent + ' ';
+    }
+    return s;
+  }
+
+  // The new app's timeline is a virtual list of absolutely placed rows that ignores 0-height rows, so
+  // display:none leaves a gap where the post was. A 1px row is the smallest size it re-flows around.
+  // It also measures each row the moment React mounts it and shifts the scroll when a row above the
+  // viewport changes size, so a row hidden only after mounting makes the page jump. Rows are therefore
+  // hidden by a stylesheet rule keyed on the post link, which already applies when a row remounts.
+  const hiddenRows = new Set(); // data-href of each hidden row's first post
+  const rowStyle = document.createElement('style');
+  let rowCss = '';
+  function rowKey(cell) {
+    const post = cell.querySelector(':scope > [data-href], :scope > * > [data-href]');
+    return post ? post.getAttribute('data-href') : null;
+  }
+  function writeRowCss() {
+    const sels = Array.from(hiddenRows, k => {
+      const pin = k.match(/^#(\d+) (.*)$/); // pinned row: "#<data-index> <href>"
+      const q = '[data-href="' + CSS.escape(pin ? pin[2] : k) + '"]';
+      return 'main li[data-index' + (pin ? '="' + pin[1] + '"' : '') + ']:has(> ' + q + ', > * > ' + q + ')';
+    });
+    const css = sels.length
+      ? sels.join(',\n') + '{height:1px!important;overflow:hidden!important;visibility:hidden!important;overflow-anchor:none}'
+      : '';
+    if (css !== rowCss) rowStyle.textContent = rowCss = css;
+  }
+
+  // A pinned post often shows again further down the feed with the same link. Its rule is pinned to its
+  // row index too, so hiding one copy never hides or unhides the other.
+  function setCellHidden(cell, hide, pinned) {
+    let key = cell.tagName === 'LI' && rowKey(cell);
+    if (key) {
+      if (pinned) key = '#' + cell.getAttribute('data-index') + ' ' + key;
+      if (hide) addCapped(hiddenRows, key, ROW_CAP); else hiddenRows.delete(key);
+      return;
+    }
+    if (cell.tagName === 'LI') {
+      cell.style.height = hide ? '1px' : '';
+      cell.style.overflow = hide ? 'hidden' : '';
+      cell.style.visibility = hide ? 'hidden' : '';
+      cell.style.overflowAnchor = hide ? 'none' : '';
+    } else {
+      cell.style.display = hide ? 'none' : '';
+    }
+  }
+
   // A reply-expander cell (conversation link, no tweet).
   function isReplyExpander(cell) {
-    if (cell.querySelector('[data-testid="tweet"]')) return false;
+    if (cell.querySelector(TWEET_SEL)) return false;
     if (cell.querySelector('a[href*="/i/status/"]')) return true;
     // Bare "Show replies" too: a reply with its own replies gets one under it, with no /i/status/ link.
     return /show\s+(?:(?:more|additional|this)\b[^]*?)?(?:repl|thread)/i.test(cell.textContent || '');
@@ -586,7 +685,7 @@
     while (!isBlock.has(top)) {
       const p = top.parentElement;
       if (!p || p === tweet || p.getBoundingClientRect().height > h + 12 ||
-          p.querySelector('[data-testid="tweetText"], [data-testid="User-Name"]')) break;
+          p.querySelector(TEXT_SEL + ', ' + NAME_SEL)) break;
       top = p;
     }
     blockOf.set(el, top);
@@ -598,8 +697,8 @@
     const modsActive = state.compact || state.hideText || state.hideMedia || state.hideEngagement;
     if (!modsActive && !modsWereActive) return; // nothing to apply, nothing left to restore
 
-    document.querySelectorAll('[data-testid="tweet"]').forEach(tweet => {
-      tweet.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
+    document.querySelectorAll(TWEET_SEL).forEach(tweet => {
+      tweet.querySelectorAll(TEXT_SEL).forEach(el => {
         el.style.display = state.hideText ? 'none' : '';
       });
       // "Show more" expander sits beside tweetText, so hide/restore it too.
@@ -619,7 +718,7 @@
         const target = mediaBlock(el, tweet);
         if (!target) return;
         // X's video player shrinks to a clipped box and keeps that size after unclipping, so pin its height.
-        if (state.compact && !state.hideMedia && el.querySelector('[data-testid="videoPlayer"]')) {
+        if (state.compact && !state.hideMedia && (el.matches(VIDEO_SEL) || el.querySelector(VIDEO_SEL))) {
           const h = el.getBoundingClientRect().height;
           if (!el.style.height && h) el.style.height = h + 'px';
         } else {
@@ -637,7 +736,7 @@
         }
       });
       // Engagement bar (the reply / repost / like / views action row).
-      tweet.querySelectorAll('[data-testid="reply"]').forEach(btn => {
+      tweet.querySelectorAll(REPLY_BTN).forEach(btn => {
         const bar = btn.closest('[role="group"]');
         if (bar) bar.style.display = state.hideEngagement ? 'none' : '';
       });
@@ -652,11 +751,15 @@
     if (owner !== activeProfile) {
       activeProfile = owner;
       FILTERS.forEach(f => { seen[f.key].clear(); hiddenIds[f.key].clear(); });
+      hiddenRows.clear();
     }
 
     // Cheap and rare: strip "Post Video" from the video right-click menu.
     document.querySelectorAll('[data-testid="postVideoContextMenuItem"]').forEach(el => {
       el.style.display = state.hidePostVideo ? 'none' : '';
+    });
+    document.querySelectorAll('[role="menuitem"]').forEach(el => { // new app: no test id, match the label
+      if (/^post video$/i.test(el.textContent.trim())) el.style.display = state.hidePostVideo ? 'none' : '';
     });
 
     // On a profile's Replies tab nearly every post is a reply: hiding them empties the page and X then
@@ -666,10 +769,12 @@
 
     const box = document.getElementById(BOX_ID);
     const anyFilterOn = !!box && FILTERS.some(f => on(f.key));
+    filtering = anyFilterOn;
+    loadAhead();
 
     // Only scan/classify cells while filtering is engaged, plus one pass to restore when it stops.
     if (anyFilterOn || filtersWereActive) {
-      document.querySelectorAll('[data-testid="cellInnerDiv"]').forEach(cell => {
+      document.querySelectorAll(CELL_SEL).forEach(cell => {
         const info = classify(cell);
         if (!info) {
           // Non-tweet cell: "Show more replies" expanders track the replies filter.
@@ -677,7 +782,7 @@
           if (isReplyExpander(cell)) {
             hideCell = state.invert ? (anyFilterOn && !on('replies')) : on('replies');
           }
-          cell.style.display = hideCell ? 'none' : '';
+          setCellHidden(cell, hideCell);
           return;
         }
 
@@ -698,8 +803,9 @@
         if (info.replyContext && on('replies')) matched = true;
 
         const hide = state.invert ? (anyFilterOn && !matched) : matched;
-        cell.style.display = hide ? 'none' : '';
+        setCellHidden(cell, hide, info.cats.pinned);
       });
+      writeRowCss();
 
       if (box) {
         FILTERS.forEach(f => {
@@ -735,14 +841,18 @@
   function setupFastRetweet() {
     let timer = null;
     const obs = new MutationObserver(() => {
-      const confirm = document.querySelector('[data-testid="retweetConfirm"], [data-testid="unretweetConfirm"]');
+      const confirm = document.querySelector('[data-testid="retweetConfirm"], [data-testid="unretweetConfirm"]') ||
+        // new app: plain menu items, matched by label
+        Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"]'))
+          .find(el => /^(repost|undo repost)$/i.test(el.textContent.trim()));
       if (confirm) { stop(); confirm.click(); }
     });
     function stop() { obs.disconnect(); if (timer) { clearTimeout(timer); timer = null; } }
     document.addEventListener('click', (e) => {
       if (!state.fastRetweet) return;
       const t = e.target;
-      if (!t || !t.closest || !t.closest('[data-testid="retweet"], [data-testid="unretweet"]')) return;
+      if (!t || !t.closest ||
+          !t.closest('[data-testid="retweet"], [data-testid="unretweet"], [data-engagement-action="retweet"]')) return;
       obs.observe(document.body, { childList: true, subtree: true });
       if (timer) clearTimeout(timer);
       timer = setTimeout(stop, 1500); // give up if the menu never appears
@@ -755,11 +865,36 @@
   window.addEventListener('contextmenu', (e) => {
     if (!state.nativePhotoMenu) return;
     const t = e.target;
-    if (!t || !t.closest || !t.closest('[data-testid="tweetPhoto"] img')) return;
+    if (!t || !t.closest || !t.closest('[data-testid="tweetPhoto"] img, a[data-engagement-action="media"] img')) return;
     // Videos and GIFs sit inside tweetPhoto too, with an <img> poster; they keep X's menu.
     if (t.closest('[data-testid="videoComponent"], [data-testid="videoPlayer"]')) return;
+    const trigger = t.closest('[data-slot="xds-context-menu-trigger"]');
+    if (trigger && trigger.querySelector('video')) return;
     e.stopImmediatePropagation();
   }, true);
+
+  // New app: X asks for the next page once, 1.75 screens before the end. With most rows hidden that is
+  // too late and scrolling stalls at the bottom while the page loads, so ask from 4 screens out.
+  // X ignores the call while that page is already loading.
+  let filtering = false;
+  let lastLoadAhead = 0;
+  function loadAhead() {
+    if (!filtering || Date.now() - lastLoadAhead < 500) return;
+    if (document.documentElement.scrollHeight - scrollY - innerHeight > innerHeight * 4) return;
+    const row = document.querySelector('main li[data-index]');
+    if (!row) return; // old app
+    const raw = row.wrappedJSObject || row; // Firefox sandbox hides the page's React keys
+    const key = Object.keys(raw).find(k => k.startsWith('__reactFiber$'));
+    for (let f = key && raw[key], i = 0; f && i < 60; f = f.return, i++) {
+      const p = f.memoizedProps;
+      if (p && typeof p.onNearEnd === 'function') {
+        lastLoadAhead = Date.now();
+        p.onNearEnd();
+        return;
+      }
+    }
+  }
+  window.addEventListener('scroll', loadAhead, { passive: true });
 
   let scheduled = false;
   function schedule() {
@@ -773,6 +908,7 @@
   focusStyle.textContent = '#' + BOX_ID + ' [role="button"]:focus-visible,#' + BOX_ID + ' [role="checkbox"]:focus-visible' +
     '{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}';
   document.head.appendChild(focusStyle);
+  document.head.appendChild(rowStyle);
 
   loadState();
   setupFastRetweet();
