@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Info
 // @namespace    ceeprus
-// @version      3.2
+// @version      3.2.1
 // @description  Masks the emails, names and addresses you list on every site: page text, tab title, tooltips, form fields, editors
 // @author       ceeprus
 // @icon         https://raw.githubusercontent.com/ceeprus/userscript/main/assets/ceeprus-64.png
@@ -301,7 +301,7 @@
 
   function checkField(el) {
     if (el.localName === "input" && SKIP_INPUT_TYPES.has(el.type)) return;
-    const ranges = el.isConnected ? coverRanges(el) : [];
+    const ranges = el.isConnected && el.ownerDocument.defaultView ? coverRanges(el) : []; // a removed frame's document stays "connected" with no window
     const hit = ranges.length > 0;
     // Scaled or rotated (a popup zoom animation): the text copy cannot line up, so cover the field whole.
     const top = hit && (inTopLayer(el) || Math.abs(el.getBoundingClientRect().width - el.offsetWidth) > 0.5);
@@ -423,6 +423,7 @@
     checkPendingHosts(); // also in hidden tabs, or elements removed meanwhile stay referenced
     if (document.hidden || !M) return;
     for (const root of roots) {
+      if (root.nodeType === 9 && !root.defaultView) { roots.delete(root); continue; } // frame reloaded or removed: drop its old document
       if (root.host && !root.host.isConnected) continue;
       for (const el of root.querySelectorAll("input, textarea")) checkField(el);
     }
