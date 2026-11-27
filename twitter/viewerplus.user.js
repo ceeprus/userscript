@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitter Viewer +
 // @namespace    https://github.com/ceeprus
-// @version      1.43
+// @version      1.44
 // @description  Adds a themed, icon-labelled panel to X/Twitter profiles that hides pinned posts, replies, quote retweets, retweets, plain posts, media posts and text-only posts (each with a live counter), plus compact-media, hide-post-text, hide-media and hide-engagement-bar toggles, a "show only checked" invert mode, a fast-retweet toggle (skips the Quote menu), a toggle to hide "Post Video" from the video right-click menu and one that gives photos the browser's own right-click menu. Settings persist, and the panel can be minimised. Matches your X theme and accent colour.
 // @author       ceeprus
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
@@ -768,7 +768,7 @@
     const on = k => state[k] && !(k === 'replies' && skipReplies);
 
     const box = document.getElementById(BOX_ID);
-    const anyFilterOn = !!box && FILTERS.some(f => on(f.key));
+    const anyFilterOn = FILTERS.some(f => on(f.key)); // not tied to the panel: X drops the sidebar below 1024px
     filtering = anyFilterOn;
     loadAhead();
 
