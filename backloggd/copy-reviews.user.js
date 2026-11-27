@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backloggd - Copy Review Link
 // @namespace    https://github.com/ceeprus
-// @version      1.5
+// @version      1.5.1
 // @description  Adds an icon-only "copy link" button next to the "Open review" button on Backloggd review cards
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=backloggd.com
 // @author       ceeprus
@@ -107,7 +107,8 @@
             const showCopied = () => {
                 btn.classList.add('copied', 'swap');
                 btn.innerHTML = '<i class="fa-solid fa-check"></i><span class="label">Link copied</span>';
-                setTimeout(() => {
+                clearTimeout(btn._resetTimer); // a second click restarts the 1.5 s instead of an older timer cutting it short
+                btn._resetTimer = setTimeout(() => {
                     btn.classList.remove('copied');
                     btn.innerHTML = '<i class="fa-solid fa-link"></i>';
                 }, 1500);
