@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.6
+// @version      3.28.7
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -863,11 +863,11 @@
 				if (CONFIG.showBuyOrders && priceFresh(cachedRec) &&
 					cachedRec.bo == null && (cachedRec.lp || cachedRec.mp)) {
 					const ob = await fetchOrderbook(job.appid, job.mhn).catch(() => null);
-					cachedRec.bo = ob?.buyCents ? ob.buyCents / 100 : 0; // 0 = checked, none
+					if (ob) cachedRec.bo = ob.buyCents ? ob.buyCents / 100 : 0; // 0 = checked, none
 					savePriceCache();
 					document.querySelectorAll(`[data-sia-pk="${CSS.escape(job.key)}"]`)
 						.forEach((el2) => renderPrice(el2, cachedRec));
-					priceQueued.delete(job.key);
+					if (ob) priceQueued.delete(job.key); // failed (429): stays queued, so it retries next page load, not in a loop
 					fetched++;
 					await sleep(CONFIG.priceCooldownMs);
 					continue;
@@ -891,6 +891,7 @@
 				const j = res.ok ? await res.json() : null;
 				// cache misses too (success:false = not on market) so we don't refetch them
 				const rec = { lp: j?.lowest_price || null, mp: j?.median_price || null, t: Date.now() };
+				let obFailed = false;
 				// buy-order mode: one extra order-book request per item, same pacing;
 				// cheap junk skips it: its buy order is a cent anyway
 				if (CONFIG.showBuyOrders && (rec.lp || rec.mp)) {
@@ -900,12 +901,13 @@
 					} else {
 						await sleep(CONFIG.priceCooldownMs);
 						const ob = await fetchOrderbook(job.appid, job.mhn).catch(() => null);
-						rec.bo = ob?.buyCents ? ob.buyCents / 100 : 0; // 0 = checked, none
+						if (ob) rec.bo = ob.buyCents ? ob.buyCents / 100 : 0; // 0 = checked, none
+						else obFailed = true;
 					}
 				}
 				priceCache[job.key] = rec;
 				savePriceCache();
-				priceQueued.delete(job.key); // allow future stale refreshes
+				if (!obFailed) priceQueued.delete(job.key); // allow future stale refreshes
 				fetched++;
 				if (job.mhn === 'Mann Co. Supply Crate Key') {
 					valEpoch++; // the key rate anchors every currency->ref conversion
