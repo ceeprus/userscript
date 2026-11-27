@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Modrinth Plus
 // @namespace    https://github.com/ceeprus
-// @version      1.21
+// @version      1.21.1
 // @description  Better sorting for Modrinth plus a custom-modlist excluder: sort any project list by downloads, dates, name or downloads/day, hide single projects or your whole installed modlist, and auto-load the next page of results
 // @icon         https://modrinth.com/favicon.ico
 // @author       ceeprus
@@ -337,7 +337,7 @@
     pending.slice(0, 20).reduce(function (chain, cs) {
       return chain.then(function () {
         return fetch(API + '/search?query=' + encodeURIComponent(ml.cf[cs] || cs) + '&limit=3')
-          .then(function (r) { return r.json(); })
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }) // a 429 body must not cache as "no match"
           .then(function (d) {
             var want = strippedName(ml.cf[cs] || cs);
             var best = (d.hits || []).find(function (h) {
