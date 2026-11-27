@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Curator: Import Review Link from Backloggd
 // @namespace    https://github.com/ceeprus
-// @version      2.8
+// @version      2.8.1
 // @description  Adds a searchable "Import from Backloggd" box next to the "URL for full review (Optional)" field on Steam Curator review-edit pages, letting you pick one of your Backloggd reviews, auto-fill the link, and optionally import the review text into "Write your review". Prompts for your Backloggd username on first use.
 // @author       ceeprus
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=store.steampowered.com
@@ -347,6 +347,7 @@
             GM_xmlhttpRequest({
                 method: 'GET',
                 url,
+                timeout: 20000,
                 onload(resp) {
                     // Backloggd's bot check (Anubis) answers 200 with a challenge page; a browser tab
                     // passes it and leaves a cookie that later requests carry.
@@ -369,6 +370,9 @@
                 },
                 onerror() {
                     reject(new Error('Network error'));
+                },
+                ontimeout() {
+                    reject(new Error('Timed out'));
                 },
             });
         });
@@ -562,6 +566,7 @@
         let displayLimit = MAX_RESULTS_SHOWN;
         let nextPage = 1;
         let hasMore = false;
+        let listGen = 0; // bumped by refresh, so a load-more still in flight drops its stale page
 
         function renderResults(query) {
             resultsEl.innerHTML = '';
@@ -707,9 +712,11 @@
 
             loadingMore = true;
             loadMoreBtn.textContent = 'Loading…';
+            const gen = listGen;
 
             fetchReviewsPage(username, nextPage)
                 .then(({ items, hasMore: more }) => {
+                    if (gen !== listGen || !allReviews) return;
                     const existing = new Set(allReviews.map((r) => r.url));
                     items.forEach((item) => {
                         if (!existing.has(item.url)) {
@@ -724,7 +731,7 @@
                     renderResults(searchBox.value);
                 })
                 .catch((err) => {
-                    status.textContent = `Failed to load more: ${err.message}`;
+                    if (gen === listGen) status.textContent = `Failed to load more: ${err.message}`;
                 })
                 .finally(() => {
                     loadingMore = false;
@@ -772,6 +779,7 @@
 
         refreshBtn.addEventListener('click', (e) => {
             e.preventDefault();
+            listGen++;
             allReviews = null;
             nextPage = 1;
             hasMore = false;
