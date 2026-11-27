@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Workshop: Hide Mods
 // @namespace    https://github.com/ceeprus/userscript
-// @version      2.8.1
+// @version      2.8.2
 // @description  Hide Workshop mods one by one with an eye on each card, or hide every mod you're subscribed to. Two buttons at the top of the filter sidebar show or hide them again.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -181,6 +181,7 @@
         try {
             // A big list takes several page loads; a running count shows it is moving.
             subbed = await fetchSubscribedIds(appid, n => { subsLoaded = n; syncEyes(); });
+            for (const k of Object.keys(cache)) if (!(Date.now() - cache[k]?.at < SUBS_TTL)) delete cache[k];
             cache[appid] = { at: Date.now(), ids: [...subbed] };
             GM_setValue('subsCache', JSON.stringify(cache));
             subsState = 'ready';
