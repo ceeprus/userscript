@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub Commit Email Revealer
 // @namespace    https://github.com/
-// @version      5.3.4
+// @version      5.3.5
 // @description  Shows all commit author emails in a popup next to Browse Files, with live status indicator
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=github.com
 // @author       ceeprus
@@ -355,7 +355,13 @@
 
   // Boot on the first load and on every soft navigation, resetting per-commit state.
   function boot() {
-    if (!COMMIT_RE.test(location.pathname)) return;
+    if (!COMMIT_RE.test(location.pathname)) {
+      // left the commit: cancel a pending inject so its pill can't land on this page
+      patchUrl = '';
+      injecting = false;
+      closePopup();
+      return;
+    }
 
     const url = location.origin + location.pathname.replace(/\/$/, '') + '.patch';
     if (url === patchUrl && pillEl && pillEl.isConnected) return;
