@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hide My Info
 // @namespace    ceeprus
-// @version      3.3.0
+// @version      3.3.1
 // @description  Masks the emails, names and addresses you list on every site (page text, tab title, tooltips, form fields, editors) and images you pick
 // @author       ceeprus
 // @icon         https://raw.githubusercontent.com/ceeprus/userscript/main/assets/ceeprus-64.png
@@ -861,7 +861,7 @@
     undoBtn.addEventListener("click", () => {
       clearTimeout(undoTimer);
       undoBar.style.display = "none";
-      if (!removed || entries.some((e) => e.term === removed.entry.term)) return;
+      if (!removed || entries.some((e) => e.term.toLowerCase() === removed.entry.term.toLowerCase())) return;
       const next = entries.slice();
       next.splice(Math.min(removed.index, next.length), 0, removed.entry);
       added = new Set([removed.entry.term.toLowerCase()]);
