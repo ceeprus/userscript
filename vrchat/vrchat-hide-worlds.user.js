@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VRChat: Hide Worlds
 // @namespace    https://github.com/ceeprus/userscript
-// @version      1.35
+// @version      1.35.1
 // @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=vrchat.com
 // @description  Hide worlds you never want to see again from the VRChat website, and create or join an instance straight from any world card without opening the world page.
@@ -799,7 +799,7 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 				if (!ownerId) {
 					setClass(button, 'VRCWH-JOIN-ERROR', true);
 					setText(button.querySelector('.VRCWH-JOIN-LABEL'), 'Not signed in');
-					return;
+					return false;
 				}
 			}
 			instanceId = buildInstanceId(type, launch.region, ownerId);
@@ -881,11 +881,17 @@ const AUTO_LAUNCH_TIMEOUT = 20000;
 
 			button.disabled = true;
 			setText(button.querySelector('.VRCWH-JOIN-LABEL'), 'Working...');
-			try {
-				await runLaunch(button, worldId, existingInstanceFrom(card));
-			} finally {
+			let failed = false;
+			const done = () => {
 				button.disabled = false;
 				applyAll();
+			};
+			try {
+				failed = (await runLaunch(button, worldId, existingInstanceFrom(card))) === false;
+			} finally {
+				// Held disabled a moment: applyAll resets the label, so "Not signed in" would never show.
+				if (failed) setTimeout(done, 3000);
+				else done();
 			}
 		});
 
