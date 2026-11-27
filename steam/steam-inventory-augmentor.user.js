@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam Inventory Augmentor Modern
 // @namespace    https://github.com/ceeprus
-// @version      3.28.7
+// @version      3.28.8
 // @description  Steam inventory & trading enhancements with backpack.tf pricing: item value badges, sorting, duplicate grouping, trade tools.
 // @author       ceeprus
 // @icon         https://steamcommunity.com/favicon.ico
@@ -446,6 +446,7 @@
 				url,
 				onload: (r) => resolve(r.responseText),
 				onerror: () => resolve(null),
+				timeout: 60000,
 				ontimeout: () => resolve(null),
 			});
 		} else {
@@ -561,6 +562,23 @@
 		'siaDraft_' + ((new URLSearchParams(location.search)).get('partner') ||
 			String(location.pathname.match(/tradeoffer\/(\w+)/)?.[1] || 'x'));
 
+	const draftIds = (raw) => {
+		const d = JSON.parse(raw);
+		return Array.isArray(d) ? d : d?.ids || [];
+	};
+
+	// drop drafts for partners not seen in 30 days; old undated drafts get dated now
+	try {
+		const cutoff = Date.now() - 30 * 86400e3;
+		for (const k of Object.keys(localStorage)) {
+			if (!k.startsWith('siaDraft_')) continue;
+			let d = null;
+			try { d = JSON.parse(localStorage.getItem(k)); } catch { /* corrupt */ }
+			if (Array.isArray(d)) localStorage.setItem(k, JSON.stringify({ t: Date.now(), ids: d }));
+			else if (!(d?.t > cutoff)) localStorage.removeItem(k);
+		}
+	} catch { /* storage blocked */ }
+
 	function saveDraft() {
 		if (!CONFIG.draftSaver || !document.getElementById('trade_yours')) return;
 		// store app and context too: restoring must work even when a different
@@ -570,7 +588,7 @@
 				`${e.rgItem.appid}_${e.rgItem.contextid}_${e.rgItem.id || e.rgItem.assetid}`)
 			.filter((s) => s && !s.includes('undefined'));
 		try {
-			if (ids.length) localStorage.setItem(tradePartnerKey(), JSON.stringify(ids));
+			if (ids.length) localStorage.setItem(tradePartnerKey(), JSON.stringify({ t: Date.now(), ids }));
 		} catch { /* quota */ }
 	}
 
@@ -608,7 +626,7 @@
 		if (document.getElementById('sia-draft') ||
 			document.querySelectorAll('#your_slots .item').length) return;
 		let ids = [];
-		try { ids = JSON.parse(localStorage.getItem(tradePartnerKey())) || []; } catch { /* none */ }
+		try { ids = draftIds(localStorage.getItem(tradePartnerKey())); } catch { /* none */ }
 		if (!ids.length) return;
 		const btn = document.createElement('button');
 		btn.id = 'sia-draft';
@@ -2524,17 +2542,25 @@
 				: fromInventory((inv.m_rgChildInventories || {})[item.contextid], item);
 		};
 
+		const assetCount = (inv) => Object.keys(inv.m_rgAssets || {}).length +
+			assetList(inv.m_rgChildInventories).reduce((n, c) => n + assetCount(c), 0);
+
+		// re-tag when later pages add assets; count at most once per filter pass
 		function tagDupes(inv, classids = {}) {
-			if (inv._siaDupesTagged) return;
+			if (inv._siaDupesChecked) return;
+			inv._siaDupesChecked = true;
+			queueMicrotask(() => { inv._siaDupesChecked = false; });
+			const n = assetCount(inv);
+			if (inv._siaDupesTagged === n) return;
 			for (const id of Object.keys(inv.m_rgAssets || {})) {
 				const asset = inv.m_rgAssets[id];
-				if (classids[asset.classid]) asset._siaDupe = true;
-				else classids[asset.classid] = true;
+				asset._siaDupe = !!classids[asset.classid];
+				classids[asset.classid] = true;
 			}
 			for (const ctx of Object.keys(inv.m_rgChildInventories || {})) {
 				tagDupes(inv.m_rgChildInventories[ctx], classids);
 			}
-			inv._siaDupesTagged = true;
+			inv._siaDupesTagged = n;
 		}
 
 		const dupeCount = (inv) => {
